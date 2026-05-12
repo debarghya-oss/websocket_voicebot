@@ -1,590 +1,898 @@
 document.addEventListener('DOMContentLoaded', () => {
-    console.log("DOM fully loaded and parsed");
+    console.log("DOM loaded");
 
-    // --- UI Element References ---
-    const appForm = document.getElementById('app-form');
-    const textInput = document.getElementById('text_input');
-    const generateButton = document.getElementById('generate-button');
-    const audioPlayer = document.getElementById('audio-player');
-    const modeSelect = document.getElementById('mode_select');
-    const chatHistoryDisplay = document.getElementById('chat-history-display');
-    const ttsVoiceSelect = document.getElementById('tts_voice_dd');
-    const recordButton = document.getElementById('record-button');
-    const recordStatus = document.getElementById('record-status');
+    // ================================================================
+    // UI REFERENCES
+    // ================================================================
+    const appForm              = document.getElementById('app-form');
+    const textInput            = document.getElementById('text_input');
+    const generateButton       = document.getElementById('generate-button');
+    const audioPlayer          = document.getElementById('audio-player');
+    const modeSelect           = document.getElementById('mode_select');
+    const chatHistoryDisplay   = document.getElementById('chat-history-display');
+    const ttsVoiceSelect       = document.getElementById('tts_voice_dd');
+    const recordButton         = document.getElementById('record-button');
+    const recordStatus         = document.getElementById('record-status');
 
+    // STT
+    const sttEngineSelect      = document.getElementById('stt_engine_select');
+    const indicLangGroup       = document.getElementById('indic-lang-group');
+    const indicDecodeGroup     = document.getElementById('indic-decode-group');
+    const indicLangSelect      = document.getElementById('indic_language_select');
+    const indicDecodeSelect    = document.getElementById('indic_decode_select');
+
+    // LLM
+    const llmModelSelect       = document.getElementById('llm_model_select');
+    const refreshLlmModelsBtn  = document.getElementById('refresh-llm-models-btn');
+    const llmMaxTokensInput    = document.getElementById('llm_max_tokens_input');
+
+    // ================================================================
+    // STATIC DATA
+    // ================================================================
     const ttsVoices = ["tara", "jess", "leo", "leah", "dan", "mia", "zac", "zoe"];
-    const ttsSliders = [
-        { id: 'tts_temp_slider', valueId: 'tts_temp_value', isFloat: true, precision: 2 },
-        { id: 'tts_top_p_slider', valueId: 'tts_top_p_value', isFloat: true, precision: 2 },
-        { id: 'tts_rep_penalty_slider', valueId: 'tts_rep_penalty_value', isFloat: true, precision: 2 },
-        { id: 'tts_buffer_groups_slider', valueId: 'tts_buffer_groups_value', isFloat: false },
-        { id: 'tts_padding_ms_slider', valueId: 'tts_padding_ms_value', isFloat: false },
-        { id: 'tts_batch_groups_slider', valueId: 'tts_batch_groups_value', isFloat: false },
-        { id: 'client_buffer_duration_slider', valueId: 'client_buffer_duration_value', isFloat: true, precision: 2 }
-    ];
-    const llmSliders = [
-        { id: 'llm_temp_slider', valueId: 'llm_temp_value', isFloat: true, precision: 2 },
-        { id: 'llm_top_p_slider', valueId: 'llm_top_p_value', isFloat: true, precision: 2 },
-        { id: 'llm_rep_penalty_slider', valueId: 'llm_rep_penalty_value', isFloat: true, precision: 2 },
-        { id: 'llm_top_k_slider', valueId: 'llm_top_k_value', isFloat: false }
-    ];
-    const llmMaxTokensInput = document.getElementById('llm_max_tokens_input');
 
-    // --- State Variables ---
-    let audioContext = null;
-    let audioBufferQueue = [];
-    let isPlayingAudio = false;
-    let nextAudioStartTime = 0;
+    // ================================================================
+    // AUDIO STATE
+    // ================================================================
+    let audioContext               = null;
+    let audioBufferQueue           = [];
+    let isPlayingAudio             = false;
+    let nextAudioStartTime         = 0;
     let currentAudioBufferDuration = 0;
-    let clientMinBufferDuration = 0.1;
-    let fetchStreamReaderTTS = null;
-    
-    let chatHistory = []; // Model for chat content
-    let currentLLMStreamController = null;
-    
-    let mediaRecorder = null;
-    let audioChunks = [];
-    let isRecording = false;
-
+    let clientMinBufferDuration    = 0.1;
+    let fetchStreamReaderTTS       = null;
     let currentTTSPlaybackResolver = null;
 
+    // ================================================================
+    // CHAT / LLM STATE
+    // ================================================================
+    let chatHistory                           = [];
+    let currentLLMStreamController            = null;
+    let llmDisplayQueue                       = [];
+    let isDisplayingFromLLMQueue              = false;
+    let initialTextDisplayDelayMs             = 950;
+    let subsequentChunkDisplayIntervalMs      = 40;
+    let firstLLMChunkReceived                 = false;
+    let llmStreamCompleted                    = false;
+    let accumulatedLLMTextForDisplay          = "";
+    let currentAssistantMessageContentElement = null;
+
+    // ================================================================
+    // RECORDING STATE
+    // ================================================================
+    let mediaRecorder      = null;
+    let audioChunks        = [];
+    let isRecording        = false;
     let isPushToTalkActive = false;
-    let spaceBarIsDown = false;
+    let spaceBarIsDown     = false;
 
-    // --- NEW State Variables for Delayed/Queued Text Display ---
-    let llmDisplayQueue = [];
-    let isDisplayingFromLLMQueue = false;
-    let initialTextDisplayDelayMs = 950; // Delay for the first text appearance
-    let subsequentChunkDisplayIntervalMs = 40; // Speed at which queued text streams out
-    let firstLLMChunkReceived = false;
-    let llmStreamCompleted = false; // Tracks if the LLM has finished sending all data
-    let accumulatedLLMTextForDisplay = ""; // Holds the text that has been passed to the display queue processor
-    let currentAssistantMessageContentElement = null; // Direct DOM reference to update
+    // ================================================================
+    // INIT TTS VOICES
+    // ================================================================
+    function initTTSVoices() {
+        if (!ttsVoiceSelect) return;
 
-    // --- Initialization Functions ---
-    function initializeTTSVoices() {
-        if (!ttsVoiceSelect) { console.warn("TTS Voice select dropdown not found."); return; }
-        ttsVoices.forEach(voice => {
-            const option = document.createElement('option');
-            option.value = voice;
-            option.textContent = voice.charAt(0).toUpperCase() + voice.slice(1);
-            if (voice === "tara") option.selected = true;
-            ttsVoiceSelect.appendChild(option);
+        ttsVoices.forEach(v => {
+            const o = document.createElement('option');
+            o.value = v;
+            o.textContent = v.charAt(0).toUpperCase() + v.slice(1);
+
+            if (v === "tara") {
+                o.selected = true;
+            }
+
+            ttsVoiceSelect.appendChild(o);
         });
     }
-    function initializeSliders(sliderConfigArray) {
-        sliderConfigArray.forEach(config => {
-            const slider = document.getElementById(config.id);
-            const valueSpan = document.getElementById(config.valueId);
-            if (!slider || !valueSpan) { console.warn(`Slider/span not found for ${config.id}`); return; }
-            const updateValue = () => {
-                const val = parseFloat(slider.value);
-                valueSpan.textContent = config.isFloat ? val.toFixed(config.precision || 1) : slider.value;
-                if (config.id === 'client_buffer_duration_slider') clientMinBufferDuration = val;
+
+    // ================================================================
+    // STT PARAMS
+    // ================================================================
+    function getSttParams() {
+        const engine = sttEngineSelect
+            ? sttEngineSelect.value
+            : 'indic';
+
+        const language = indicLangSelect
+            ? indicLangSelect.value
+            : 'bn';
+
+        const decodeMode = indicDecodeSelect
+            ? indicDecodeSelect.value
+            : 'ctc';
+
+        console.log("[STT PARAMS]", {
+            engine,
+            language,
+            decodeMode
+        });
+
+        return {
+            engine,
+            language,
+            decodeMode
+        };
+    }
+
+    // ================================================================
+    // INDIC VISIBILITY
+    // ================================================================
+    function updateIndicVisibility() {
+        const { engine } = getSttParams();
+
+        const isIndic = engine === 'indic';
+
+        if (indicLangGroup) {
+            indicLangGroup.style.display = isIndic ? '' : 'none';
+        }
+
+        if (indicDecodeGroup) {
+            indicDecodeGroup.style.display = isIndic ? '' : 'none';
+        }
+    }
+
+    // ================================================================
+    // STT ENGINE CHANGE
+    // ================================================================
+    async function onSttEngineChange() {
+
+        updateIndicVisibility();
+
+        const { engine, language, decodeMode } = getSttParams();
+
+        console.log("STT engine changed:", engine);
+
+        if (recordStatus) {
+            recordStatus.textContent = `Engine: ${engine}`;
+        }
+
+        try {
+
+            const body = {
+                engine
             };
-            slider.addEventListener('input', updateValue);
-            updateValue();
-        });
-    }
-    function initializeTabs() {
-        const tabContainers = document.querySelectorAll('.tab-container'); 
-        if (tabContainers.length === 0) { console.warn("No elements with class 'tab-container' found for tabs."); return; }
-        tabContainers.forEach(tabContainer => {
-            const tabButtons = tabContainer.querySelectorAll('button[role="tab"]');
-            const tabPanels = tabContainer.querySelectorAll('div[role="tabpanel"]');
-            if (tabButtons.length === 0 || tabPanels.length === 0) return;
-            tabButtons.forEach(tab => {
-                tab.addEventListener('click', (event) => {
-                    event.preventDefault(); 
-                    tabButtons.forEach(t => { t.classList.remove('active'); t.setAttribute('aria-selected', 'false'); });
-                    tabPanels.forEach(p => { p.classList.remove('active'); p.style.display = 'none'; });
-                    tab.classList.add('active'); tab.setAttribute('aria-selected', 'true');
-                    const controlledPanelId = tab.getAttribute('aria-controls');
-                    const activePanel = tabContainer.querySelector(`#${controlledPanelId}`); 
-                    if (activePanel) { activePanel.classList.add('active'); activePanel.style.display = 'block'; }
-                });
+
+            if (engine === 'indic') {
+                body.language = language;
+                body.decode_mode = decodeMode;
+            }
+
+            console.log("Sending STT engine update:", body);
+
+            const res = await fetch('/api/stt/set_engine', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(body)
             });
-            let anActiveTabExists = false;
-            tabButtons.forEach(tb => {
-                if (tb.classList.contains('active') && tb.getAttribute('aria-selected') === 'true') {
-                    const panelId = tb.getAttribute('aria-controls');
-                    const panel = tabContainer.querySelector(`#${panelId}`);
-                    if (panel) { panel.style.display = 'block'; panel.classList.add('active'); anActiveTabExists = true; }
+
+            const data = await res.json().catch(() => ({}));
+
+            console.log("STT backend response:", data);
+
+            if (res.ok) {
+                if (recordStatus) {
+                    recordStatus.textContent = `✓ Engine: ${engine}`;
                 }
-            });
-            if (!anActiveTabExists && tabButtons.length > 0) tabButtons[0].click();
-        });
+            } else {
+                console.error("STT backend error:", data);
+            }
+
+        } catch (err) {
+            console.error("STT engine switch failed:", err);
+        }
     }
 
-    // --- Chat History Management ---
+    // ================================================================
+    // INITIALIZE STT LISTENERS
+    // ================================================================
+    if (sttEngineSelect) {
+
+        sttEngineSelect.addEventListener(
+            'change',
+            onSttEngineChange
+        );
+
+        if (indicLangSelect) {
+            indicLangSelect.addEventListener(
+                'change',
+                onSttEngineChange
+            );
+        }
+
+        if (indicDecodeSelect) {
+            indicDecodeSelect.addEventListener(
+                'change',
+                onSttEngineChange
+            );
+        }
+
+        // IMPORTANT
+        onSttEngineChange();
+    }
+
+    // ================================================================
+    // FETCH LLM MODELS
+    // ================================================================
+    async function fetchLLMModels() {
+
+        if (!llmModelSelect) return;
+
+        llmModelSelect.innerHTML =
+            '<option value="">— loading… —</option>';
+
+        try {
+
+            const res = await fetch('/api/llm/models');
+
+            const data = await res.json();
+
+            const models = data.models || [];
+
+            llmModelSelect.innerHTML = '';
+
+            if (models.length === 0) {
+                llmModelSelect.innerHTML =
+                    '<option value="">— no models found —</option>';
+                return;
+            }
+
+            models.forEach((m, i) => {
+
+                const o = document.createElement('option');
+
+                o.value = m;
+                o.textContent = m;
+
+                if (i === 0) {
+                    o.selected = true;
+                }
+
+                llmModelSelect.appendChild(o);
+            });
+
+            console.log(`Loaded ${models.length} model(s)`);
+
+        } catch (err) {
+
+            console.error("Failed to fetch models:", err);
+
+            llmModelSelect.innerHTML =
+                '<option value="">— fetch error —</option>';
+        }
+    }
+
+    if (refreshLlmModelsBtn) {
+        refreshLlmModelsBtn.addEventListener(
+            'click',
+            fetchLLMModels
+        );
+    }
+
+    fetchLLMModels();
+
+    // ================================================================
+    // CHAT HISTORY
+    // ================================================================
     function renderChatHistory() {
-        if (!chatHistoryDisplay) { console.warn("Chat history display element not found."); return null; }
-        chatHistoryDisplay.innerHTML = ''; // Clear previous messages
-        let lastAssistantContentDiv = null; // To update streaming text
+
+        if (!chatHistoryDisplay) return null;
+
+        chatHistoryDisplay.innerHTML = '';
+
+        let lastAssistantDiv = null;
 
         chatHistory.forEach(msg => {
-            const msgDiv = document.createElement('div');
-            msgDiv.classList.add('chat-message', msg.role === 'user' ? 'user-message' : 'assistant-message');
 
-            const messageContentWrapper = document.createElement('div');
-            messageContentWrapper.classList.add('message-content-wrapper');
+            const wrap = document.createElement('div');
 
-            // Sender Name (You: or Assistant:)
+            wrap.classList.add(
+                'chat-message',
+                msg.role === 'user'
+                    ? 'user-message'
+                    : 'assistant-message'
+            );
+
+            const inner = document.createElement('div');
+
+            inner.classList.add(
+                'message-content-wrapper'
+            );
+
             const strong = document.createElement('strong');
-            strong.textContent = msg.role === 'user' ? 'You:' : 'Assistant:';
-            messageContentWrapper.appendChild(strong);
 
-            // Message Content
-            const contentDiv = document.createElement('div');
-            if (msg.role === 'assistant' && msg.isStreaming) {
-                contentDiv.classList.add('streaming-llm-content');
+            strong.textContent =
+                msg.role === 'user'
+                    ? 'You:'
+                    : 'Assistant:';
+
+            inner.appendChild(strong);
+
+            const content = document.createElement('div');
+
+            if (
+                msg.role === 'assistant' &&
+                msg.isStreaming
+            ) {
+                content.classList.add(
+                    'streaming-llm-content'
+                );
             }
-            contentDiv.textContent = msg.content;
-            messageContentWrapper.appendChild(contentDiv);
 
-            msgDiv.appendChild(messageContentWrapper);
+            content.textContent = msg.content;
 
-            chatHistoryDisplay.appendChild(msgDiv);
+            inner.appendChild(content);
+
+            wrap.appendChild(inner);
+
+            chatHistoryDisplay.appendChild(wrap);
 
             if (msg.role === 'assistant') {
-                lastAssistantContentDiv = contentDiv;
+                lastAssistantDiv = content;
             }
         });
 
-        // Scroll to the bottom of the chat
-        chatHistoryDisplay.scrollTop = chatHistoryDisplay.scrollHeight;
-        return lastAssistantContentDiv;
+        chatHistoryDisplay.scrollTop =
+            chatHistoryDisplay.scrollHeight;
+
+        return lastAssistantDiv;
     }
 
-    function addUserMessageToChat(text) {
-        chatHistory.push({ role: 'user', content: text });
+    function addUserMessage(text) {
+        chatHistory.push({
+            role: 'user',
+            content: text
+        });
+
         renderChatHistory();
     }
 
-    function addAssistantMessageToChat(text, isStreaming = false) {
-        let existingMessageIndex = -1;
-        if (chatHistory.length > 0 && chatHistory[chatHistory.length - 1].role === 'assistant') {
-            existingMessageIndex = chatHistory.length - 1;
-        }
+    function addAssistantMessage(
+        text,
+        isStreaming = false
+    ) {
 
-        if (isStreaming && existingMessageIndex !== -1 && chatHistory[existingMessageIndex].isStreaming) {
-            chatHistory[existingMessageIndex].content = text; // Update model
+        const last =
+            chatHistory.length > 0
+                ? chatHistory[chatHistory.length - 1]
+                : null;
+
+        if (
+            isStreaming &&
+            last &&
+            last.role === 'assistant' &&
+            last.isStreaming
+        ) {
+
+            last.content = text;
+
         } else {
-             // If last message was "..." and we are providing actual content
-            if (existingMessageIndex !== -1 && chatHistory[existingMessageIndex].content === "..." && text !== "...") {
-                chatHistory[existingMessageIndex].content = text;
-                chatHistory[existingMessageIndex].isStreaming = isStreaming;
-            } else {
-                chatHistory.push({ role: 'assistant', content: text, isStreaming: isStreaming });
-            }
-        }
-        return renderChatHistory(); // Renders and returns the last assistant content div
-    }
 
-    function finalizeAssistantMessage() {
-        if (chatHistory.length > 0 && chatHistory[chatHistory.length - 1].role === 'assistant') {
-            chatHistory[chatHistory.length - 1].isStreaming = false;
-        }
-        renderChatHistory();
-    }
-    
-    // --- TTS Audio Playback Functions ---
-    function playNextAudioBuffer() {
-        if (audioBufferQueue.length === 0) {
-            isPlayingAudio = false;
-            if (fetchStreamReaderTTS === null && currentTTSPlaybackResolver) {
-                currentTTSPlaybackResolver();
-                currentTTSPlaybackResolver = null;
-            }
-            return;
-        }
-        if (isPlayingAudio) return;
-        isPlayingAudio = true;
-        const audioBuffer = audioBufferQueue.shift();
-        currentAudioBufferDuration -= audioBuffer.duration;
-        const source = audioContext.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(audioContext.destination);
-        const scheduleTime = Math.max(nextAudioStartTime, audioContext.currentTime + 0.005);
-        source.start(scheduleTime);
-        nextAudioStartTime = scheduleTime + audioBuffer.duration;
-        source.onended = () => {
-            isPlayingAudio = false;
-            playNextAudioBuffer(); 
-        };
-    }
-    async function processAudioStreamTTS(response) {
-        if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        if (audioContext.state === 'suspended') {
-            try { await audioContext.resume(); } catch (e) { console.error("AudioContext resume failed:", e); }
-        }
-        nextAudioStartTime = audioContext.currentTime; 
-        fetchStreamReaderTTS = response.body.getReader(); 
-        const sampleRate = parseInt(response.headers.get('X-Sample-Rate') || "24000", 10);
-        try {
-            while (true) {
-                const { done, value } = await fetchStreamReaderTTS.read();
-                if (done) {
-                    fetchStreamReaderTTS = null; 
-                    if (audioBufferQueue.length === 0 && !isPlayingAudio && currentTTSPlaybackResolver) {
-                        currentTTSPlaybackResolver();
-                        currentTTSPlaybackResolver = null;
-                    } else if (audioBufferQueue.length > 0 && !isPlayingAudio) {
-                        playNextAudioBuffer();
-                    }
-                    break; 
-                }
-                if (value) {
-                    const float32Array = new Float32Array(value.buffer, value.byteOffset, value.byteLength / Float32Array.BYTES_PER_ELEMENT);
-                    if (float32Array.length === 0) continue;
-                    const buffer = audioContext.createBuffer(1, float32Array.length, sampleRate);
-                    buffer.copyToChannel(float32Array, 0);
-                    audioBufferQueue.push(buffer);
-                    currentAudioBufferDuration += buffer.duration;
-                    if (!isPlayingAudio && currentAudioBufferDuration >= clientMinBufferDuration) {
-                        playNextAudioBuffer();
-                    }
-                }
-            }
-        } catch (error) {
-            console.error("Error reading TTS audio stream:", error);
-            if (fetchStreamReaderTTS) { 
-                try { await fetchStreamReaderTTS.cancel("Error in TTS stream processing"); } 
-                catch(e) {console.warn("Error cancelling reader on error:",e); }
-            }
-            fetchStreamReaderTTS = null; 
-            audioBufferQueue = []; 
-            currentAudioBufferDuration = 0;
-            if (currentTTSPlaybackResolver) { 
-                currentTTSPlaybackResolver();
-                currentTTSPlaybackResolver = null;
-            }
-        }
-    }
-    async function speakText(text) {
-        if(audioPlayer) {
-            audioPlayer.src = ''; audioPlayer.pause(); audioPlayer.removeAttribute('src');
-        }
-        audioBufferQueue = []; currentAudioBufferDuration = 0; isPlayingAudio = false;
-        if (fetchStreamReaderTTS) { 
-            try { await fetchStreamReaderTTS.cancel("New TTS request"); } 
-            catch(e) { console.warn("Error cancelling previous TTS reader", e); }
-            fetchStreamReaderTTS = null;
-        }
-        if (currentTTSPlaybackResolver) { currentTTSPlaybackResolver(); }
-        const playbackCompletePromise = new Promise(resolve => { currentTTSPlaybackResolver = resolve; });
-        const ttsPayload = {
-            text: text, voice: ttsVoiceSelect.value,
-            tts_temperature: parseFloat(document.getElementById('tts_temp_slider').value),
-            tts_top_p: parseFloat(document.getElementById('tts_top_p_slider').value),
-            tts_repetition_penalty: parseFloat(document.getElementById('tts_rep_penalty_slider').value),
-            buffer_groups: parseInt(document.getElementById('tts_buffer_groups_slider').value, 10),
-            padding_ms: parseInt(document.getElementById('tts_padding_ms_slider').value, 10),
-            min_decode_batch_groups: parseInt(document.getElementById('tts_batch_groups_slider').value, 10)
-        };
-        try {
-            const response = await fetch('/api/tts/stream', { 
-                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ttsPayload) 
+            chatHistory.push({
+                role: 'assistant',
+                content: text,
+                isStreaming
             });
-            if (!response.ok) {
-                const errData = await response.json().catch(() => ({ detail: `TTS API Error: ${response.status}` }));
-                throw new Error(errData.detail || `TTS API Error: ${response.status}`);
-            }
-            await processAudioStreamTTS(response); 
-            await playbackCompletePromise;
-        } catch (error) {
-            console.error('TTS Request failed:', error);
-            addAssistantMessageToChat(`(TTS Error: ${error.message})`);
-            if (currentTTSPlaybackResolver) { currentTTSPlaybackResolver(); currentTTSPlaybackResolver = null; }
         }
+
+        return renderChatHistory();
     }
 
-    // --- LLM Interaction Functions ---
-    function processLLMDisplayQueue() {
-        if (llmDisplayQueue.length > 0) {
-            isDisplayingFromLLMQueue = true;
-            const chunkToDisplay = llmDisplayQueue.shift();
-            accumulatedLLMTextForDisplay += chunkToDisplay;
-            
-            if (currentAssistantMessageContentElement) {
-                currentAssistantMessageContentElement.textContent = accumulatedLLMTextForDisplay;
-                if(chatHistoryDisplay) chatHistoryDisplay.scrollTop = chatHistoryDisplay.scrollHeight;
-            } else {
-                addAssistantMessageToChat(accumulatedLLMTextForDisplay, true);
-            }
-            setTimeout(processLLMDisplayQueue, subsequentChunkDisplayIntervalMs);
-        } else {
-            isDisplayingFromLLMQueue = false;
-            if (llmStreamCompleted) {
-                if (chatHistory.length > 0 && chatHistory[chatHistory.length - 1].role === 'assistant') {
-                    chatHistory[chatHistory.length - 1].content = accumulatedLLMTextForDisplay;
-                }
-                finalizeAssistantMessage();
-            }
-        }
-    }
-
-    async function fetchLLMResponse(promptText) {
-        llmDisplayQueue = [];
-        isDisplayingFromLLMQueue = false;
-        firstLLMChunkReceived = false;
-        llmStreamCompleted = false;
-        accumulatedLLMTextForDisplay = "";
-
-        currentAssistantMessageContentElement = addAssistantMessageToChat("...", true); 
-        if (currentAssistantMessageContentElement && currentAssistantMessageContentElement.textContent === "...") {
-             currentAssistantMessageContentElement.textContent = "";
-        }
-
-        const historyForAPI = chatHistory.slice(0, -2)
-                                 .filter(msg => msg.content !== "...") 
-                                 .map(msg => ({ role: msg.role, content: msg.content })); 
-
-        const llmPayload = {
-            prompt: promptText, 
-            history: historyForAPI,
-            temperature: parseFloat(document.getElementById('llm_temp_slider').value),
-            top_p: parseFloat(document.getElementById('llm_top_p_slider').value),
-            max_tokens: parseInt(llmMaxTokensInput.value, 10),
-            repetition_penalty: parseFloat(document.getElementById('llm_rep_penalty_slider').value),
-            top_k: parseInt(document.getElementById('llm_top_k_slider').value, 10)
-        };
-        if (llmPayload.top_k === 0) delete llmPayload.top_k;
-
-        let fullLLMResponse = "";
-        currentLLMStreamController = new AbortController();
-
-        try {
-            const response = await fetch('/api/llm/chat/stream', { 
-                method: 'POST', 
-                headers: { 'Content-Type': 'application/json' }, 
-                body: JSON.stringify(llmPayload), 
-                signal: currentLLMStreamController.signal 
-            });
-
-            if (!response.ok) {
-                let errorDetailMessage = `LLM API Error: Status ${response.status} - ${response.statusText}`;
-                try { 
-                    const errorData = await response.json(); 
-                    if (errorData && errorData.detail) { errorDetailMessage = errorData.detail; }
-                    else if (errorData && errorData.error && errorData.error.message) { errorDetailMessage = errorData.error.message; }
-                    else if (typeof errorData === 'string') {errorDetailMessage = errorData;}
-                    else { errorDetailMessage = JSON.stringify(errorData); }
-                } catch (e) { console.warn("Could not parse LLM error JSON:", e); }
-                throw new Error(errorDetailMessage);
-            }
-
-            const reader = response.body.getReader(); 
-            const decoder = new TextDecoder();
-            
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) { 
-                    llmStreamCompleted = true;
-                    if (!isDisplayingFromLLMQueue && llmDisplayQueue.length === 0) {
-                        if (chatHistory.length > 0 && chatHistory[chatHistory.length - 1].role === 'assistant') {
-                           chatHistory[chatHistory.length - 1].content = accumulatedLLMTextForDisplay;
-                        }
-                        finalizeAssistantMessage();
-                    }
-                    console.log("LLM stream finished."); 
-                    break; 
-                }
-                
-                const chunk = decoder.decode(value, { stream: true });
-                fullLLMResponse += chunk;
-                llmDisplayQueue.push(chunk);
-
-                if (!firstLLMChunkReceived) {
-                    firstLLMChunkReceived = true;
-                    setTimeout(() => {
-                        if (!isDisplayingFromLLMQueue) {
-                            processLLMDisplayQueue();
-                        }
-                    }, initialTextDisplayDelayMs);
-                }
-            }
-            
-            const currentMode = modeSelect.value;
-            if (currentMode === 'llm_tts' && fullLLMResponse.trim() && !fullLLMResponse.trim().startsWith("[Error")) {
-                if (generateButton) generateButton.textContent = 'Synthesizing...'; 
-                await speakText(fullLLMResponse.trim());
-            }
-
-        } catch (error) {
-            console.error('LLM Request failed:', error);
-            llmStreamCompleted = true;
-            const errorMsg = error.name === 'AbortError' ? "(LLM request cancelled by user)" : `(LLM Error: ${error.message})`;
-            
-            if (currentAssistantMessageContentElement) {
-                currentAssistantMessageContentElement.textContent = errorMsg;
-                currentAssistantMessageContentElement.classList.remove('streaming-llm-content');
-            }
-            if (chatHistory.length > 0 && chatHistory[chatHistory.length - 1].role === 'assistant') {
-                chatHistory[chatHistory.length - 1].content = errorMsg;
-            } else {
-                addAssistantMessageToChat(errorMsg, false);
-            }
-            finalizeAssistantMessage();
-        } finally { 
-            currentLLMStreamController = null; 
-        }
-    }
-
-    // --- STT Functions ---
-    const SVG_MIC_ICON = `
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" style="width:1.3em; height:1.3em;">
-            <path d="M12 18.75a6 6 0 0 0 6-6v-1.5a6 6 0 0 0-12 0v1.5a6 6 0 0 0 6 6Z" />
-            <path d="M12 22.5a3 3 0 0 1-3-3v-1.5a3 3 0 0 1 6 0v1.5a3 3 0 0 1-3 3Z" />
-            <path d="M8.25 12a3.75 3.75 0 0 0-3.75 3.75v.75a.75.75 0 0 0 1.5 0v-.75a2.25 2.25 0 0 1 2.25-2.25H12v-.75A3.75 3.75 0 0 0 8.25 12Z" />
-            <path d="M12 12h3.75a2.25 2.25 0 0 1 2.25 2.25v.75a.75.75 0 0 0 1.5 0v-.75A3.75 3.75 0 0 0 15.75 12H12Z" />
-        </svg>`;
+    // ================================================================
+    // RECORDING
+    // ================================================================
+    const SVG_MIC = `
+    <svg xmlns="http://www.w3.org/2000/svg"
+         viewBox="0 0 24 24"
+         fill="currentColor"
+         style="width:1.2em;height:1.2em;">
+        <path d="M12 1a4 4 0 0 1 4 4v7a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4z"/>
+    </svg>`;
 
     async function startRecording() {
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            alert("Browser doesn't support audio recording.");
-            if (recordStatus) recordStatus.textContent = "Not supported."; return;
+
+        if (!navigator.mediaDevices?.getUserMedia) {
+            alert("Browser doesn't support recording.");
+            return;
         }
+
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            const options = { mimeType: 'audio/webm;codecs=opus' };
-            if (!MediaRecorder.isTypeSupported(options.mimeType)) { delete options.mimeType; }
-            mediaRecorder = new MediaRecorder(stream, options); audioChunks = [];
-            mediaRecorder.ondataavailable = event => { audioChunks.push(event.data); };
-            mediaRecorder.onstop = async () => {
-                let fileExtension = ".webm"; let blobType = mediaRecorder.mimeType || 'audio/webm';
-                if (mediaRecorder && mediaRecorder.mimeType) {
-                    if (mediaRecorder.mimeType.includes("audio/wav")) fileExtension = ".wav";
-                    else if (mediaRecorder.mimeType.includes("audio/mp3")) fileExtension = ".mp3";
-                    else if (mediaRecorder.mimeType.includes("audio/ogg")) fileExtension = ".ogg";
-                }
-                const audioBlob = new Blob(audioChunks, { type: blobType }); audioChunks = [];
-                stream.getTracks().forEach(track => track.stop());
-                await sendAudioForTranscription(audioBlob, `user_recording${fileExtension}`);
+
+            const stream =
+                await navigator.mediaDevices.getUserMedia({
+                    audio: true
+                });
+
+            mediaRecorder = new MediaRecorder(stream);
+
+            audioChunks = [];
+
+            mediaRecorder.ondataavailable = e => {
+                audioChunks.push(e.data);
             };
-            mediaRecorder.start(); isRecording = true;
-            if (recordButton) { recordButton.innerHTML = '🛑'; recordButton.classList.add('recording'); }
-            if (recordStatus) recordStatus.textContent = "Recording...";
+
+            mediaRecorder.onstop = async () => {
+
+                const blob = new Blob(audioChunks, {
+                    type: 'audio/webm'
+                });
+
+                audioChunks = [];
+
+                stream.getTracks().forEach(t => t.stop());
+
+                await sendAudioForTranscription(
+                    blob,
+                    'recording.webm'
+                );
+            };
+
+            mediaRecorder.start();
+
+            isRecording = true;
+
+            if (recordButton) {
+                recordButton.innerHTML = '🛑';
+                recordButton.classList.add('recording');
+            }
+
+            if (recordStatus) {
+                recordStatus.textContent = 'Recording…';
+            }
+
         } catch (err) {
-            console.error("Mic error:", err); alert("Mic error. Check permissions.");
-            if (recordStatus) recordStatus.textContent = "Mic error!"; isRecording = false;
-            if (recordButton) { recordButton.innerHTML = SVG_MIC_ICON; recordButton.classList.remove('recording'); }
+
+            console.error("Mic error:", err);
+
+            alert("Microphone permission denied.");
+
+            isRecording = false;
         }
     }
+
     function stopRecording() {
-        if (mediaRecorder && mediaRecorder.state === "recording") {
-            mediaRecorder.stop(); isRecording = false;
-            if (recordButton) { recordButton.innerHTML = SVG_MIC_ICON; recordButton.classList.remove('recording'); }
-            if (recordStatus) recordStatus.textContent = "Processing...";
+
+        if (
+            mediaRecorder &&
+            mediaRecorder.state === 'recording'
+        ) {
+
+            mediaRecorder.stop();
+
+            isRecording = false;
+
+            if (recordButton) {
+                recordButton.innerHTML = SVG_MIC;
+                recordButton.classList.remove('recording');
+            }
+
+            if (recordStatus) {
+                recordStatus.textContent = 'Processing…';
+            }
         }
     }
-    async function sendAudioForTranscription(audioBlob, fileName) {
-        const formData = new FormData(); formData.append("audio_file", audioBlob, fileName);
-        if (recordStatus) recordStatus.textContent = "Transcribing...";
-        if (generateButton) generateButton.disabled = true;
-        let transcriptionSuccessful = false;
+
+    // ================================================================
+    // SEND AUDIO TO STT
+    // ================================================================
+    async function sendAudioForTranscription(
+        blob,
+        fileName
+    ) {
+
+        const {
+            engine,
+            language,
+            decodeMode
+        } = getSttParams();
+
+        console.log("Sending transcription request:", {
+            engine,
+            language,
+            decodeMode
+        });
+
+        let url = '/api/stt/transcribe';
+
+        const params = new URLSearchParams();
+
+        params.set('engine', engine);
+
+        if (engine === 'indic') {
+            params.set('language', language);
+            params.set('decode_mode', decodeMode);
+        }
+
+        url += '?' + params.toString();
+
+        console.log("FINAL STT URL:", url);
+
+        const form = new FormData();
+
+        form.append(
+            'audio_file',
+            blob,
+            fileName
+        );
+
         try {
-            const response = await fetch('/api/stt/transcribe', { method: 'POST', body: formData });
-            if (!response.ok) {
-                const err = await response.json().catch(() => ({ detail: `STT API Error: ${response.status}` }));
-                throw new Error(err.detail || `STT Error: ${response.status}`);
+
+            if (recordStatus) {
+                recordStatus.textContent =
+                    `Transcribing (${engine})…`;
             }
-            const result = await response.json();
-            if (result.error) { throw new Error(result.error); }
-            if (textInput) textInput.value = result.text;
-            if (recordStatus) recordStatus.textContent = "Transcribed!";
-            transcriptionSuccessful = true;
-        } catch (error) {
-            console.error('STT Request failed:', error); alert(`Transcription error: ${error.message}`);
-            if (recordStatus) recordStatus.textContent = "STT failed!";
-        } finally {
-            if (generateButton) generateButton.disabled = false;
-            if (transcriptionSuccessful && isPushToTalkActive) {
-                if (textInput && textInput.value.trim() !== "") {
-                    if (generateButton) generateButton.click();
-                } else { console.log("PTT: No transcribed text to submit.");}
+
+            const res = await fetch(url, {
+                method: 'POST',
+                body: form
+            });
+
+            const data = await res.json();
+
+            console.log("STT RESPONSE:", data);
+
+            if (!res.ok) {
+                throw new Error(
+                    data.detail || 'STT failed'
+                );
             }
-            if(isPushToTalkActive) isPushToTalkActive = false;
-            spaceBarIsDown = false; 
+
+            if (textInput) {
+                textInput.value = data.text || '';
+            }
+
+            if (recordStatus) {
+                recordStatus.textContent =
+                    `✓ ${engine}`;
+            }
+
+        } catch (err) {
+
+            console.error("STT ERROR:", err);
+
+            alert(`STT Error: ${err.message}`);
+
+            if (recordStatus) {
+                recordStatus.textContent =
+                    'STT failed!';
+            }
         }
     }
+
+    // ================================================================
+    // RECORD BUTTON
+    // ================================================================
+    if (recordButton) {
+
+        recordButton.addEventListener(
+            'click',
+            () => {
+
+                if (isRecording) {
+                    stopRecording();
+                } else {
+                    startRecording();
+                }
+            }
+        );
+    }
+
+    // ================================================================
+    // PUSH TO TALK
+    // ================================================================
+    document.addEventListener('keydown', async e => {
+
+        if (e.code !== 'Space') return;
+
+        const el = document.activeElement;
+
+        if (
+            el &&
+            el.tagName.toLowerCase() === 'textarea'
+        ) {
+            return;
+        }
+
+        e.preventDefault();
+
+        if (!isRecording && !spaceBarIsDown) {
+
+            spaceBarIsDown = true;
+
+            isPushToTalkActive = true;
+
+            await startRecording();
+        }
+    });
+
+    document.addEventListener('keyup', async e => {
+
+        if (e.code !== 'Space') return;
+
+        if (spaceBarIsDown) {
+
+            spaceBarIsDown = false;
+
+            if (
+                isRecording &&
+                isPushToTalkActive
+            ) {
+
+                stopRecording();
+            }
+
+            isPushToTalkActive = false;
+        }
+    });
+
+    // ================================================================
+    // TTS STREAMING HANDLER (Web Audio API)
+    // ================================================================
+    async function streamTTSAudio(response) {
+        if (!audioContext) {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+        }
+        if (audioContext.state === 'suspended') {
+            await audioContext.resume();
+        }
+        
+        const reader = response.body.getReader();
+        let nextStartTime = audioContext.currentTime + 0.2; // Start with a small buffer
+        let leftoverBytes = new Uint8Array(0);
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            // Combine leftover from previous network chunk
+            const totalLength = leftoverBytes.length + value.length;
+            const combined = new Uint8Array(totalLength);
+            combined.set(leftoverBytes, 0);
+            combined.set(value, leftoverBytes.length);
+            
+            // Number of complete floats (4 bytes each)
+            const numFloats = Math.floor(combined.length / 4);
+            const completeBytesLength = numFloats * 4;
+            
+            // Save the remainder
+            leftoverBytes = combined.slice(completeBytesLength);
+            
+            if (numFloats > 0) {
+                // Ensure the buffer is copied out so we can construct a valid Float32Array
+                const slicedBuffer = combined.buffer.slice(combined.byteOffset, combined.byteOffset + completeBytesLength);
+                const float32Data = new Float32Array(slicedBuffer);
+                
+                const audioBuffer = audioContext.createBuffer(1, numFloats, 24000);
+                audioBuffer.copyToChannel(float32Data, 0);
+                
+                const source = audioContext.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(audioContext.destination);
+                
+                // If we fell behind, catch up to current time
+                if (nextStartTime < audioContext.currentTime) {
+                    nextStartTime = audioContext.currentTime + 0.05;
+                }
+                
+                source.start(nextStartTime);
+                nextStartTime += audioBuffer.duration;
+            }
+        }
+    }
+
+    // ================================================================
+    // FORM SUBMIT
+    // ================================================================
+    if (appForm) {
+        appForm.addEventListener(
+            'submit',
+            async e => {
+                e.preventDefault();
+
+                const userText = textInput.value.trim();
+
+                if (!userText) {
+                    alert("Enter some text.");
+                    return;
+                }
+
+                // 1. Add User Message
+                addUserMessage(userText);
+                textInput.value = '';
+
+                // Read mode
+                const mode = modeSelect ? modeSelect.value : 'llm_only';
+
+                // Setup UI for generation
+                if (generateButton) {
+                    generateButton.disabled = true;
+                    generateButton.textContent = "Generating...";
+                }
+
+                // ================================================================
+                // TTS ONLY MODE
+                // ================================================================
+                if (mode === 'tts_only') {
+                    try {
+                        const voice = ttsVoiceSelect ? ttsVoiceSelect.value : "tara";
+                        const ttsTemp = parseFloat(document.getElementById('tts_temp_slider')?.value || "2.0");
+                        const ttsTopP = parseFloat(document.getElementById('tts_top_p_slider')?.value || "0.9");
+                        const bufferGroups = parseInt(document.getElementById('tts_buffer_groups_slider')?.value || "5");
+                        const paddingMs = parseInt(document.getElementById('tts_padding_ms_slider')?.value || "0");
+                        const batchGroups = parseInt(document.getElementById('tts_batch_groups_slider')?.value || "7");
+
+                        const ttsReq = {
+                            text: userText,
+                            voice: voice,
+                            tts_temperature: ttsTemp,
+                            tts_top_p: ttsTopP,
+                            buffer_groups: bufferGroups,
+                            padding_ms: paddingMs,
+                            min_decode_batch_groups: batchGroups
+                        };
+
+                        const response = await fetch('/api/tts/stream', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(ttsReq)
+                        });
+
+                        if (!response.ok) throw new Error("TTS Request failed");
+
+                        // Play audio dynamically as chunks arrive
+                        await streamTTSAudio(response);
+
+                    } catch (err) {
+                        console.error("TTS Error:", err);
+                        alert("TTS Generation failed.");
+                    } finally {
+                        if (generateButton) {
+                            generateButton.disabled = false;
+                            generateButton.textContent = "Generate";
+                        }
+                    }
+                    return;
+                }
+
+                // ================================================================
+                // LLM (+ Optional TTS) MODE
+                // ================================================================
+                
+                const assistantContentElement = addAssistantMessage("", true);
+                currentAssistantMessageContentElement = assistantContentElement;
+                accumulatedLLMTextForDisplay = "";
+
+                try {
+                    // Prepare LLM parameters
+                    const temp = parseFloat(document.getElementById('llm_temp_slider')?.value || "0.7");
+                    const topP = parseFloat(document.getElementById('llm_top_p_slider')?.value || "0.9");
+                    const repPenalty = parseFloat(document.getElementById('llm_rep_penalty_slider')?.value || "1.1");
+                    const topK = parseInt(document.getElementById('llm_top_k_slider')?.value || "45");
+                    const maxTokens = parseInt(document.getElementById('llm_max_tokens_input')?.value || "-1");
+                    const model = llmModelSelect ? llmModelSelect.value : null;
+
+                    // History for API (Exclude the user prompt we just added to the UI array)
+                    // We must map it to only include 'role' and 'content' because the backend Pydantic
+                    // model (Dict[str, str]) will reject booleans like 'isStreaming: false'.
+                    const historyForAPI = chatHistory
+                        .filter(msg => !msg.isStreaming && msg.role !== 'system')
+                        .slice(0, -1)
+                        .map(msg => ({ role: msg.role, content: msg.content }));
+
+                    const requestBody = {
+                        prompt: userText,
+                        history: historyForAPI,
+                        model: model,
+                        temperature: temp,
+                        top_p: topP,
+                        max_tokens: maxTokens,
+                        repetition_penalty: repPenalty,
+                        top_k: topK
+                    };
+
+                    const response = await fetch('/api/llm/chat/stream', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(requestBody)
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`Server returned ${response.status}: ${response.statusText}`);
+                    }
+
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder('utf-8');
+                    let done = false;
+
+                    // Stream LLM chunks to the UI
+                    while (!done) {
+                        const { value, done: readerDone } = await reader.read();
+                        done = readerDone;
+                        
+                        if (value) {
+                            const chunk = decoder.decode(value, { stream: true });
+                            accumulatedLLMTextForDisplay += chunk;
+                            
+                            if (currentAssistantMessageContentElement) {
+                                currentAssistantMessageContentElement.textContent = accumulatedLLMTextForDisplay;
+                                if (chatHistoryDisplay) {
+                                    chatHistoryDisplay.scrollTop = chatHistoryDisplay.scrollHeight;
+                                }
+                            }
+                        }
+                    }
+
+                    // Update final chat history state
+                    const lastMsg = chatHistory[chatHistory.length - 1];
+                    if (lastMsg && lastMsg.role === 'assistant') {
+                        lastMsg.content = accumulatedLLMTextForDisplay;
+                        lastMsg.isStreaming = false;
+                    }
+
+                    // If LLM+TTS mode, send the completed text to the TTS endpoint
+                    if (mode === 'llm_tts' && accumulatedLLMTextForDisplay.trim() !== '') {
+                        if (generateButton) generateButton.textContent = "Generating TTS...";
+                        
+                        const voice = ttsVoiceSelect ? ttsVoiceSelect.value : "tara";
+                        const ttsTemp = parseFloat(document.getElementById('tts_temp_slider')?.value || "2.0");
+                        const ttsTopP = parseFloat(document.getElementById('tts_top_p_slider')?.value || "0.9");
+                        const bufferGroups = parseInt(document.getElementById('tts_buffer_groups_slider')?.value || "5");
+                        const paddingMs = parseInt(document.getElementById('tts_padding_ms_slider')?.value || "0");
+                        const batchGroups = parseInt(document.getElementById('tts_batch_groups_slider')?.value || "7");
+
+                        const ttsReq = {
+                            text: accumulatedLLMTextForDisplay,
+                            voice: voice,
+                            tts_temperature: ttsTemp,
+                            tts_top_p: ttsTopP,
+                            buffer_groups: bufferGroups,
+                            padding_ms: paddingMs,
+                            min_decode_batch_groups: batchGroups
+                        };
+
+                        const ttsResponse = await fetch('/api/tts/stream', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(ttsReq)
+                        });
+
+                        if (ttsResponse.ok) {
+                            // Play audio dynamically as chunks arrive
+                            await streamTTSAudio(ttsResponse);
+                        } else {
+                            console.error("TTS generation failed after LLM completion.");
+                        }
+                    }
+
+                } catch (err) {
+                    console.error("LLM Stream Error:", err);
+                    accumulatedLLMTextForDisplay += `\n[Error: ${err.message}]`;
+                    if (currentAssistantMessageContentElement) {
+                        currentAssistantMessageContentElement.textContent = accumulatedLLMTextForDisplay;
+                    }
+                } finally {
+                    if (generateButton) {
+                        generateButton.disabled = false;
+                        generateButton.textContent = "Generate";
+                    }
+                    if (currentAssistantMessageContentElement) {
+                        currentAssistantMessageContentElement.classList.remove('streaming-llm-content');
+                    }
+                }
+            }
+        );
+    }
+
+    // ================================================================
+    // BOOT
+    // ================================================================
+    initTTSVoices();
+
+    renderChatHistory();
 
     if (recordButton) {
-        recordButton.addEventListener('click', () => {
-            if (isRecording) { stopRecording(); } else { startRecording(); }
-        });
+        recordButton.innerHTML = SVG_MIC;
     }
 
-    // --- Push-to-Talk Event Listeners ---
-    document.addEventListener('keydown', async (event) => {
-        if (event.code === 'Space') {
-            const activeEl = document.activeElement;
-            if (activeEl && (activeEl.tagName.toLowerCase() === 'input' || activeEl.tagName.toLowerCase() === 'textarea')) {
-                if (activeEl === textInput && textInput.value.length > 0) return;
-                if (activeEl !== textInput) return; 
-            }
-            event.preventDefault(); 
-            if (!isRecording && !spaceBarIsDown) {
-                spaceBarIsDown = true; isPushToTalkActive = true; 
-                await startRecording();
-            }
-        }
-    });
-    document.addEventListener('keyup', async (event) => {
-        if (event.code === 'Space') {
-            const activeEl = document.activeElement;
-            if (activeEl === textInput && !isPushToTalkActive && !spaceBarIsDown) return;
-            if (activeEl && (activeEl.tagName.toLowerCase() === 'input' || activeEl.tagName.toLowerCase() === 'textarea') && activeEl !== textInput) return;
-            if (spaceBarIsDown) {
-                spaceBarIsDown = false; 
-                if (isRecording && isPushToTalkActive) { 
-                    await stopRecording(); 
-                } else if (isPushToTalkActive) {
-                    isPushToTalkActive = false;
-                }
-            }
-        }
-    });
-
-    // --- Main Form Submit Handler ---
-    if (appForm) {
-        appForm.addEventListener('submit', async (event) => {
-            event.preventDefault();
-            const currentMode = modeSelect.value;
-            const userText = textInput.value.trim();
-            if (!userText && !isPushToTalkActive) { alert("Please enter text or record audio first."); return; }
-            if (!userText && isPushToTalkActive) { return; }
-            if (generateButton) { generateButton.disabled = true; generateButton.textContent = 'Processing...'; }
-            addUserMessageToChat(userText);
-            if (currentMode === 'tts_only' && textInput) textInput.value = ''; 
-            try {
-                if (currentMode === 'tts_only') {
-                    if (generateButton) generateButton.textContent = 'Synthesizing...';
-                    await speakText(userText);
-                } else if (currentMode === 'llm_only' || currentMode === 'llm_tts') {
-                    if (generateButton) generateButton.textContent = 'Thinking...';
-                    await fetchLLMResponse(userText); 
-                }
-            } catch (e) {
-                console.error("Error in main submission process:", e);
-                addAssistantMessageToChat(`(App Error: ${e.message})`);
-                finalizeAssistantMessage();
-            } finally {
-                if (generateButton) { generateButton.disabled = false; generateButton.textContent = 'Generate'; }
-                if ((currentMode === 'llm_only' || currentMode === 'llm_tts') && textInput) textInput.value = '';
-            }
-        });
-    } else { console.warn("App form not found."); }
-
-    // --- Initial Page Setup Calls ---
-    initializeTTSVoices();
-    initializeSliders(ttsSliders);
-    initializeSliders(llmSliders);
-    if (document.getElementById('client_buffer_duration_slider')) {
-        clientMinBufferDuration = parseFloat(document.getElementById('client_buffer_duration_slider').value);
-    }
-    initializeTabs();
-    renderChatHistory();
-    if (recordButton) recordButton.innerHTML = SVG_MIC_ICON;
-
-}); // End of DOMContentLoaded
+});

@@ -16,10 +16,26 @@ logger = logging.getLogger(__name__) # Will inherit root logger's config from ma
 # --- LLM Constants ---
 SERVER_BASE_URL = os.getenv("SERVER_BASE_URL", "http://127.0.0.1:1234")
 LMSTUDIO_API_ENDPOINT = f"{SERVER_BASE_URL}/v1/chat/completions"
-LMSTUDIO_MODEL = os.getenv("LMSTUDIO_MODEL", "gemma-4-e4b-it") # Default from user's Gradio script
+LMSTUDIO_MODEL = os.getenv("LMSTUDIO_MODEL", "gemma-3n-e4b-it") # Default from user's Gradio script
 LMSTUDIO_SYSTEM_PROMPT = os.getenv(
     "LMSTUDIO_SYSTEM_PROMPT",
-    "You are Jarvis from the movie Iron Man. You are a helpful assistant that provides concise and accurate answers to user queries. Always respond in a clear and informative manner, using the information available to you. If you don't know the answer, say you don't know instead of making something up."
+    """You are Jarvis, the AI assistant from Iron Man. Your communication style is precise, efficient, and composed. Provide concise, accurate, and directly useful answers without unnecessary elaboration.
+
+Guidelines:
+
+* Prioritize clarity, correctness, and brevity.
+* Use a calm, confident, slightly formal tone.
+* Avoid filler language, repetition, or verbosity.
+* Do not use asterisks or decorative formatting.
+* Structure responses logically when needed, but keep them compact.
+* If information is uncertain or unavailable, explicitly state that you do not know.
+* Do not speculate or fabricate details.
+* Focus on actionable insights and relevant facts.
+stop using "*" and have conversation in complete sentences only and make sure your sentences are not lenghty.
+
+Your objective is to function as a highly reliable, intelligent assistant that delivers clean, minimal, and high-value responses.
+""" 
+
 )
 
 DEFAULT_LMSTUDIO_MAX_TOKENS = -1
@@ -41,6 +57,7 @@ LLM_FAILED_PREFIX = "[Error"
 class LLMChatRequest(BaseModel):
     prompt: str
     history: List[Dict[str, str]] = []
+    model: Optional[str] = None  # Allow frontend to specify model
     temperature: float = DEFAULT_LMSTUDIO_TEMP
     top_p: float = DEFAULT_LMSTUDIO_TOP_P
     max_tokens: int = DEFAULT_LMSTUDIO_MAX_TOKENS
@@ -56,10 +73,15 @@ def generate_llm_text_stream(
     llm_top_p: float,
     llm_max_tokens: int,
     llm_repetition_penalty: float,
-    llm_top_k: Optional[int] = None
+    llm_top_k: Optional[int] = None,
+    model: Optional[str] = None
 ) -> Generator[str, None, None]:
     request_id = str(uuid.uuid4())
     logger.info(f"[{request_id}] LLM Router: Initiating LLM stream request.")
+
+    # Use provided model or fall back to default
+    selected_model = model if model else LMSTUDIO_MODEL
+    logger.info(f"[{request_id}] LLM Router: Using model: {selected_model}")
 
     messages = [{"role": "system", "content": LMSTUDIO_SYSTEM_PROMPT}]
     if history:
@@ -68,7 +90,7 @@ def generate_llm_text_stream(
     messages.append({"role": "user", "content": prompt})
 
     payload = {
-        "model": LMSTUDIO_MODEL,
+        "model": selected_model,
         "messages": messages,
         "temperature": llm_temperature,
         "top_p": llm_top_p,
@@ -145,10 +167,10 @@ def generate_llm_text_stream(
         logger.info(f"[{request_id}] LLM Router: LLM stream processing loop finished after {time.time() - stream_start_time:.3f}s.")
 
     except requests.exceptions.Timeout:
-        logger.error(f"[{request_id}] LLM Router: ❌ LLM API stream request timed out after {STREAM_TIMEOUT_SECONDS} seconds.", exc_info=True)
+        logger.error(f"[{request_id}] LLM Router:  LLM API stream request timed out after {STREAM_TIMEOUT_SECONDS} seconds.", exc_info=True)
         yield f"{LLM_FAILED_PREFIX} (LLM stream request timed out)"
     except requests.exceptions.RequestException as req_e:
-        logger.exception(f"[{request_id}] LLM Router: ❌ LLM API stream request failed: {req_e}")
+        logger.exception(f"[{request_id}] LLM Router: LLM API stream request failed: {req_e}")
         err_yield = f"{LLM_FAILED_PREFIX} (Error connecting to LLM server)"
         if hasattr(req_e, 'response') and req_e.response is not None:
             try:
@@ -159,7 +181,7 @@ def generate_llm_text_stream(
                 err_yield = f"{LLM_FAILED_PREFIX} (LLM Server Error: {req_e.response.status_code} - {req_e.response.text[:200]})"
         yield err_yield
     except Exception as e: # Catch-all for any other unexpected errors
-        logger.exception(f"[{request_id}] LLM Router: ❌ Unexpected error during LLM stream generation: {e}")
+        logger.exception(f"[{request_id}] LLM Router: Unexpected error during LLM stream generation: {e}")
         yield f"{LLM_FAILED_PREFIX} (Unexpected Error in LLM stream: {str(e)})"
     finally:
         if response_obj:
@@ -174,10 +196,8 @@ router = APIRouter()
 # --- LLM Chat Endpoint Definition ---
 @router.post("/chat/stream", summary="Stream LLM Chat Completions", tags=["LLM"])
 async def llm_chat_stream_endpoint_router(request_data: LLMChatRequest):
-    # request_id can be generated here or use a middleware to add to request state if needed more broadly
-    # For now, generate_llm_text_stream handles its own internal request_id for logging.
-    # logger.info(f"LLM Router: 🚀 Received POST request to /chat/stream") # Logged within generate_llm_text_stream
-    # logger.info(f"LLM Router: 📚 Request Payload: {request_data.model_dump_json(indent=2)}") # Logged within generate_llm_text_stream
+    logger.info(f"LLM Router: Received POST request to /chat/stream")
+    logger.info(f"LLM Router: Request Payload: {request_data.model_dump_json(indent=2)}")
     
     text_generator = generate_llm_text_stream(
         prompt=request_data.prompt,
@@ -186,7 +206,8 @@ async def llm_chat_stream_endpoint_router(request_data: LLMChatRequest):
         llm_top_p=request_data.top_p,
         llm_max_tokens=request_data.max_tokens,
         llm_repetition_penalty=request_data.repetition_penalty,
-        llm_top_k=request_data.top_k
+        llm_top_k=request_data.top_k,
+        model=request_data.model
     )
     return StreamingResponse(text_generator, media_type="text/event-stream")
 # --- End LLM Chat Endpoint Definition ---
