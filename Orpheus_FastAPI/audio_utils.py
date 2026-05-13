@@ -4,6 +4,8 @@ import torch
 from torch import nn
 import logging
 from typing import List, Optional
+import base64
+from io import BytesIO
 
 from config import (
     ORPHEUS_MIN_ID, ORPHEUS_MAX_ID, ORPHEUS_TOKENS_PER_LAYER, 
@@ -156,3 +158,59 @@ def apply_fade(audio_chunk: np.ndarray, sample_rate: int, fade_ms: int = 5) -> n
     audio_chunk[-num_fade_samples:] *= fade_out
     logger.debug(f"Applied {fade_ms}ms fade to audio chunk.")
     return audio_chunk
+
+
+# ================================================================
+# BASE64 AUDIO ENCODING/DECODING
+# ================================================================
+def encode_audio_to_base64(audio_bytes: bytes) -> str:
+    """Encodes raw audio bytes to base64 string."""
+    if not audio_bytes:
+        return ""
+    try:
+        return base64.b64encode(audio_bytes).decode('utf-8')
+    except Exception as e:
+        logger.error(f"Failed to encode audio to base64: {e}")
+        return ""
+
+
+def decode_audio_from_base64(audio_base64: str) -> bytes:
+    """Decodes base64 string to raw audio bytes."""
+    if not audio_base64:
+        return b''
+    try:
+        return base64.b64decode(audio_base64)
+    except Exception as e:
+        logger.error(f"Failed to decode audio from base64: {e}")
+        return b''
+
+
+def encode_float32_chunk_to_base64(float32_array: np.ndarray) -> str:
+    """Converts Float32 numpy array to bytes and encodes as base64."""
+    if float32_array is None or float32_array.size == 0:
+        return ""
+    try:
+        # Ensure it's float32
+        if float32_array.dtype != np.float32:
+            float32_array = float32_array.astype(np.float32)
+        audio_bytes = float32_array.tobytes()
+        return encode_audio_to_base64(audio_bytes)
+    except Exception as e:
+        logger.error(f"Failed to encode float32 chunk to base64: {e}")
+        return ""
+
+
+def decode_base64_to_float32(audio_base64: str) -> Optional[np.ndarray]:
+    """Decodes base64 string to Float32 numpy array."""
+    if not audio_base64:
+        return None
+    try:
+        audio_bytes = decode_audio_from_base64(audio_base64)
+        if not audio_bytes:
+            return None
+        # Convert bytes back to float32 array
+        float32_array = np.frombuffer(audio_bytes, dtype=np.float32)
+        return float32_array
+    except Exception as e:
+        logger.error(f"Failed to decode base64 to float32: {e}")
+        return None

@@ -1,6 +1,8 @@
 #!/bin/bash
 
-# to be run on ubuntu 24.04+ 
+# to be run on ubuntu 24.04+ if you are running this codebase on bare metal
+# if you are running the code through a docker container, you can skip this setup and use the provided Dockerfile instead
+# We highly recommend using the docker container for ease of use and to avoid any potential issues with dependencies and compatibility, but if you prefer to run it on bare metal, this setup script will help you get everything installed and configured properly.
 
 #get system up to date
 sudo apt update

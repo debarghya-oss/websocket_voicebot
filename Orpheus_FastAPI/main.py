@@ -36,6 +36,7 @@ from tts_engine import generate_speech_stream_bytes
 from whisper_stt_engine import transcribe_audio as whisper_transcribe
 from indic_stt_engine import transcribe_audio as indic_transcribe
 from llm_router import router as llm_api_router, LLMChatRequest, generate_llm_text_stream
+from audio_utils import encode_audio_to_base64, decode_audio_from_base64, encode_float32_chunk_to_base64, decode_base64_to_float32
 
 # --- End Imports ---
 
@@ -234,7 +235,7 @@ async def websocket_llm_endpoint(websocket: WebSocket):
 
 @app.websocket("/ws/tts")
 async def websocket_tts_endpoint(websocket: WebSocket):
-    """WebSocket endpoint for streaming TTS audio bytes."""
+    """WebSocket endpoint for streaming TTS audio bytes in base64 format."""
     await websocket.accept()
     try:
         request_data = await websocket.receive_json()
@@ -243,8 +244,16 @@ async def websocket_tts_endpoint(websocket: WebSocket):
 
         logger.info("WebSocket TTS: Received request payload")
         tts_request = TTSRequestWithDefaults(**request_data)
+        request_id = str(uuid.uuid4())
+        logger.info(f"[{request_id}] WebSocket TTS: Text: '{tts_request.text[:100]}...'")
 
-        await websocket.send_json({"type": "tts_started", "sample_rate": TARGET_SAMPLE_RATE, "audio_format": "FLOAT32_PCM"})
+        await websocket.send_json({
+            "type": "tts_started", 
+            "sample_rate": TARGET_SAMPLE_RATE, 
+            "audio_format": "FLOAT32_PCM_BASE64",
+            "encoding": "base64"
+        })
+        logger.info(f"[{request_id}] WebSocket TTS: Sent tts_started message")
 
         audio_generator = generate_speech_stream_bytes(
             text=tts_request.text,
@@ -258,20 +267,123 @@ async def websocket_tts_endpoint(websocket: WebSocket):
         )
 
         sent_any_audio = False
+        chunk_count = 0
+        total_bytes = 0
+        
         for audio_chunk in audio_generator:
             if audio_chunk:
                 sent_any_audio = True
-                await websocket.send_bytes(audio_chunk)
+                chunk_count += 1
+                total_bytes += len(audio_chunk)
+                
+                # Encode audio bytes to base64
+                audio_base64 = encode_audio_to_base64(audio_chunk)
+                
+                # Log chunk info with base64 preview
+                base64_preview = audio_base64[:80] + "..." if len(audio_base64) > 80 else audio_base64
+                logger.info(
+                    f"[{request_id}] TTS Chunk #{chunk_count} | "
+                    f"Bytes: {len(audio_chunk)} | "
+                    f"Base64 len: {len(audio_base64)} | "
+                    f"Base64: {base64_preview}"
+                )
+                
+                await websocket.send_json({
+                    "type": "tts_audio_chunk",
+                    "audio": audio_base64,
+                    "bytes_length": len(audio_chunk)
+                })
 
         if not sent_any_audio:
+            logger.warning(f"[{request_id}] No audio frames were generated")
             await websocket.send_json({"type": "tts_warning", "message": "No audio frames were generated."})
+        else:
+            logger.info(
+                f"[{request_id}] TTS Streaming Complete | "
+                f"Total Chunks: {chunk_count} | "
+                f"Total Bytes: {total_bytes}"
+            )
 
         await websocket.send_json({"type": "tts_done"})
+        logger.info(f"[{request_id}] WebSocket TTS: Sent tts_done message")
 
     except WebSocketDisconnect:
         logger.info("WebSocket TTS: Client disconnected")
     except Exception as exc:
         logger.exception("WebSocket TTS: Error while streaming")
+        try:
+            await websocket.send_json({"type": "error", "message": str(exc)})
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+@app.websocket("/ws/stt")
+async def websocket_stt_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for streaming STT (base64 audio upload and transcription)."""
+    await websocket.accept()
+    try:
+        request_data = await websocket.receive_json()
+        if not isinstance(request_data, dict):
+            raise ValueError("Invalid JSON payload")
+
+        logger.info("WebSocket STT: Received request payload")
+        
+        # Extract parameters from request
+        engine = request_data.get("engine", "indic")
+        language = request_data.get("language", "bn")
+        decode_mode = request_data.get("decode_mode", "ctc")
+        audio_base64 = request_data.get("audio", "")
+        
+        if not audio_base64:
+            raise ValueError("No audio data provided")
+
+        # Decode base64 audio
+        audio_bytes = decode_audio_from_base64(audio_base64)
+        if not audio_bytes:
+            raise ValueError("Failed to decode audio from base64")
+
+        logger.info(f"WebSocket STT: Received {len(audio_bytes)} bytes of audio for transcription")
+
+        # Save to temporary file for transcription
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp_file:
+            tmp_file.write(audio_bytes)
+            tmp_path = tmp_file.name
+
+        try:
+            await websocket.send_json({"type": "stt_processing", "message": "Transcribing audio..."})
+
+            # Transcribe based on selected engine
+            if engine == "whisper":
+                transcript = whisper_transcribe(tmp_path)
+            elif engine == "indic":
+                transcript = indic_transcribe(tmp_path, language=language, decode_mode=decode_mode)
+            else:
+                transcript = indic_transcribe(tmp_path, language=language, decode_mode=decode_mode)
+
+            await websocket.send_json({
+                "type": "stt_result",
+                "text": transcript,
+                "engine": engine,
+                "language": language
+            })
+
+        finally:
+            # Clean up temporary file
+            try:
+                os.remove(tmp_path)
+            except Exception as e:
+                logger.warning(f"Failed to remove temp file: {e}")
+
+    except WebSocketDisconnect:
+        logger.info("WebSocket STT: Client disconnected")
+    except Exception as exc:
+        logger.exception("WebSocket STT: Error during transcription")
         try:
             await websocket.send_json({"type": "error", "message": str(exc)})
         except Exception:

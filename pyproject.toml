@@ -11,6 +11,7 @@ dependencies = [
     "openai-whisper>=20250625",
     "requests>=2.34.0",
     "snac>=1.2.1",
+    "sounddevice>=0.5.5",
     "torch>=2.11.0",
     "torchaudio>=2.11.0",
     "torchvision>=0.26.0",
