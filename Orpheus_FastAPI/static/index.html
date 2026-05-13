@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Jarvis – Orpheus TTS / STT / LLM</title>
+    <meta name="description" content="Voice and text AI assistant powered by Orpheus TTS, Whisper/Indic STT, and local LLM.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=VT323&display=swap" rel="stylesheet">
+    <style>
+        /* ── Design Tokens ─────────────────────────────────────────────── */
+        :root {
+            --bg:            #0d0d0d;
+            --bg-card:       #151515;
+            --bg-panel:      #1a1a1a;
+            --bg-input:      #222222;
+            --border:        #2e2e2e;
+            --border-focus:  #07f1ca;
+            --accent:        #07f1ca;
+            --accent-dim:    #04a78a;
+            --accent-dark:   #012f29;
+            --accent-glow:   rgba(7,241,202,0.18);
+            --text:          #e2e2e2;
+            --text-muted:    #888;
+            --text-label:    #07f1ca;
+            --user-bubble:   #011f1a;
+            --bot-bubble:    #0a0a0a;
+            --error:         #e57373;
+            --error-bg:      #3b1a1a;
+            --btn-text:      #000f20;
+            --btn-disabled:  #013d39;
+            --radius:        8px;
+            --radius-lg:     12px;
+            --shadow:        0 4px 24px rgba(0,0,0,0.5);
+            --glow:          0 0 16px rgba(7,241,202,0.22);
+        }
+
+        /* ── Reset / Base ──────────────────────────────────────────────── */
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        html { background: var(--bg); }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            font-size: 14px;
+            line-height: 1.6;
+            color: var(--text);
+            background: var(--bg);
+            background-image:
+                radial-gradient(ellipse at 20% 10%, rgba(7,241,202,0.04) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 90%, rgba(7,241,202,0.03) 0%, transparent 50%);
+            min-height: 100vh;
+        }
+
+        /* ── Layout ────────────────────────────────────────────────────── */
+        .page-wrapper { max-width: 820px; margin: 0 auto; padding: 20px 16px 40px; }
+
+        /* ── Header ────────────────────────────────────────────────────── */
+        header {
+            text-align: center;
+            padding: 28px 20px 18px;
+            margin-bottom: 20px;
+        }
+        h1 {
+            font-family: 'VT323', monospace;
+            font-size: 3rem;
+            color: var(--accent);
+            text-shadow: 0 0 20px rgba(7,241,202,0.4), 0 0 40px rgba(7,241,202,0.15);
+            letter-spacing: 2px;
+        }
+        .subtitle {
+            color: var(--text-muted);
+            font-size: 0.82rem;
+            margin-top: 4px;
+            letter-spacing: 0.5px;
+        }
+
+        /* ── Card ──────────────────────────────────────────────────────── */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 20px;
+            margin-bottom: 16px;
+            box-shadow: var(--shadow);
+        }
+        .card:hover { border-color: rgba(7,241,202,0.2); }
+
+        /* ── Chat History ──────────────────────────────────────────────── */
+        #chat-history-display {
+            height: 380px;
+            overflow-y: auto;
+            padding: 14px;
+            background: var(--bg-panel);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: var(--glow);
+            scroll-behavior: smooth;
+        }
+        #chat-history-display::-webkit-scrollbar { width: 5px; }
+        #chat-history-display::-webkit-scrollbar-track { background: transparent; }
+        #chat-history-display::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+        .section-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--accent);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+        }
+
+        /* ── Chat Bubbles ──────────────────────────────────────────────── */
+        .chat-message { display: flex; align-items: flex-start; margin-bottom: 12px; max-width: 88%; }
+        .message-content-wrapper {
+            padding: 9px 13px;
+            border-radius: 10px;
+            word-wrap: break-word;
+            flex-grow: 1;
+            line-height: 1.55;
+            font-size: 0.88rem;
+        }
+        .assistant-message { margin-right: auto; }
+        .assistant-message .message-content-wrapper {
+            background: var(--bot-bubble);
+            border: 1px solid var(--border);
+            color: var(--text);
+        }
+        .user-message { margin-left: auto; flex-direction: row-reverse; }
+        .user-message .message-content-wrapper {
+            background: var(--user-bubble);
+            border: 1px solid var(--accent-dim);
+            color: #fff;
+        }
+        .chat-message strong {
+            display: block;
+            margin-bottom: 3px;
+            color: var(--accent);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .streaming-llm-content { white-space: pre-wrap; }
+
+        /* ── Form ──────────────────────────────────────────────────────── */
+        #app-form { margin-top: 0; }
+
+        /* ── Selector Grid ─────────────────────────────────────────────── */
+        .selector-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+            gap: 12px;
+            margin-bottom: 14px;
+        }
+        .selector-group { display: flex; flex-direction: column; gap: 5px; }
+
+        /* ── Labels ────────────────────────────────────────────────────── */
+        label {
+            font-size: 0.73rem;
+            font-weight: 600;
+            color: var(--accent);
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+        }
+
+        /* ── Inputs / Selects ──────────────────────────────────────────── */
+        input[type="text"],
+        input[type="number"],
+        textarea,
+        select {
+            width: 100%;
+            padding: 8px 10px;
+            background: var(--bg-input);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            font-family: inherit;
+            font-size: 0.88rem;
+            transition: border-color 0.2s, box-shadow 0.2s;
+            outline: none;
+        }
+        input:focus, textarea:focus, select:focus {
+            border-color: var(--border-focus);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+        select {
+            background-image: url('data:image/svg+xml;charset=US-ASCII,%3Csvg xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22 width%3D%22292%22 height%3D%22292%22%3E%3Cpath fill%3D%22%2307f1ca%22 d%3D%22M287 69a18 18 0 0 0-13-5H18a18 18 0 0 0-13 5 18 18 0 0 0 0 26l128 128c4 4 8 5 13 5s9-2 13-5L287 95a18 18 0 0 0 0-26z%22%2F%3E%3C%2Fsvg%3E');
+            background-repeat: no-repeat;
+            background-position: right .65em center;
+            background-size: .6em;
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            appearance: none;
+            padding-right: 2em;
+            cursor: pointer;
+        }
+        textarea { resize: vertical; min-height: 72px; }
+
+        /* ── Indic extra options (shown only when indic engine selected) ── */
+        #indic-options {
+            display: none;
+            margin-top: 12px;
+        }
+        #indic-options.visible { display: block; }
+
+        /* ── Input + Mic Row ───────────────────────────────────────────── */
+        .input-row {
+            display: flex;
+            gap: 8px;
+            align-items: flex-start;
+            margin-bottom: 12px;
+        }
+        .input-row textarea { flex: 1; margin: 0; }
+
+        #record-button {
+            flex-shrink: 0;
+            width: 42px;
+            height: 42px;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--bg-input);
+            color: var(--accent);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 1.2em;
+            margin-top: 0;
+        }
+        #record-button:hover:not(:disabled) {
+            border-color: var(--accent);
+            background: var(--accent-dark);
+        }
+        #record-button.recording {
+            background: var(--error-bg);
+            color: var(--error);
+            border-color: var(--error);
+            animation: pulse-rec 1s infinite;
+        }
+        @keyframes pulse-rec {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(229,115,115,0.4); }
+            50%       { box-shadow: 0 0 0 6px rgba(229,115,115,0); }
+        }
+
+        #record-status {
+            font-size: 0.75rem;
+            color: var(--accent);
+            font-style: italic;
+            min-width: 80px;
+            line-height: 42px;
+            white-space: nowrap;
+        }
+
+        /* ── Buttons ───────────────────────────────────────────────────── */
+        button {
+            display: block;
+            width: 100%;
+            padding: 10px 16px;
+            background: var(--accent);
+            color: var(--btn-text);
+            border: none;
+            border-radius: var(--radius);
+            font-size: 0.9rem;
+            font-weight: 700;
+            font-family: inherit;
+            letter-spacing: 0.5px;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-top: 10px;
+        }
+        button:hover:not(:disabled) {
+            background: var(--accent-dim);
+            box-shadow: 0 0 14px var(--accent-glow);
+        }
+        button:disabled {
+            background: var(--btn-disabled);
+            color: var(--text-muted);
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
+        /* ── LLM Model refresh btn ─────────────────────────────────────── */
+        #refresh-llm-models-btn {
+            width: auto;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 5px 10px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            margin-top: 0;
+            border-radius: 6px;
+            background: var(--bg-input);
+            color: var(--accent);
+            border: 1px solid var(--border);
+        }
+        #refresh-llm-models-btn:hover:not(:disabled) {
+            border-color: var(--accent);
+            background: var(--accent-dark);
+            box-shadow: none;
+        }
+
+        /* ── Details / Params accordion ────────────────────────────────── */
+        details {
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background: var(--bg-panel);
+            margin-bottom: 12px;
+            overflow: hidden;
+        }
+        summary {
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: var(--accent);
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            cursor: pointer;
+            padding: 10px 14px;
+            list-style: none;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            user-select: none;
+        }
+        summary::before { content: '▶'; font-size: 0.6rem; transition: transform 0.2s; }
+        details[open] > summary::before { transform: rotate(90deg); }
+        details > .details-inner {
+            padding: 12px 14px;
+            border-top: 1px solid var(--border);
+        }
+
+        /* ── Sliders ───────────────────────────────────────────────────── */
+        .param-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .param-row label {
+            min-width: 190px;
+            text-transform: none;
+            letter-spacing: 0;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+        .param-row input[type="range"] {
+            flex: 1;
+            accent-color: var(--accent);
+            cursor: pointer;
+            padding: 0;
+            height: 4px;
+        }
+        .param-row .param-value {
+            min-width: 40px;
+            text-align: right;
+            color: var(--accent);
+            font-size: 0.82rem;
+            font-weight: 600;
+        }
+        input[type="number"]#llm_max_tokens_input {
+            width: 100px;
+            display: inline-block;
+        }
+
+        /* ── Audio player ──────────────────────────────────────────────── */
+        audio { display: block; width: 100%; margin-top: 8px; }
+
+        /* ── Footer ────────────────────────────────────────────────────── */
+        footer {
+            text-align: center;
+            padding: 10px;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        /* ── Status badge ──────────────────────────────────────────────── */
+        .engine-badge {
+            display: inline-block;
+            font-size: 0.65rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            padding: 1px 6px;
+            border-radius: 999px;
+            border: 1px solid currentColor;
+            margin-left: 6px;
+            vertical-align: middle;
+        }
+        .engine-badge.whisper { color: #60a5fa; }
+        .engine-badge.indic   { color: #f59e0b; }
+
+        /* ── Separator ─────────────────────────────────────────────────── */
+        hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+
+        /* ── Responsive ────────────────────────────────────────────────── */
+        @media (max-width: 520px) {
+            h1 { font-size: 2.2rem; }
+            .selector-grid { grid-template-columns: 1fr 1fr; }
+        }
+    </style>
+</head>
+<body>
+<div class="page-wrapper">
+
+    <!-- ── Header ─────────────────────────────────────────────────── -->
+    <header>
+        <h1>Jarvis</h1>
+        <p class="subtitle">Orpheus TTS &nbsp;·&nbsp; Whisper &amp; Indic Conformer STT &nbsp;·&nbsp; Local LLM</p>
+    </header>
+
+    <!-- ── Chat History ───────────────────────────────────────────── -->
+    <div class="card">
+        <div class="section-label">Conversation</div>
+        <div id="chat-history-display"></div>
+    </div>
+
+    <!-- ── Main Form ──────────────────────────────────────────────── -->
+    <div class="card">
+        <form id="app-form">
+
+            <!-- ── Row 1: Mode · TTS Voice · LLM Model ──────────── -->
+            <div class="selector-grid">
+
+                <!-- Mode -->
+                <div class="selector-group">
+                    <label for="mode_select">Mode</label>
+                    <select id="mode_select">
+                        <option value="llm_tts" selected>LLM + TTS</option>
+                        <option value="llm_only">LLM Only</option>
+                        <option value="tts_only">TTS Only</option>
+                    </select>
+                </div>
+
+                <!-- TTS Voice -->
+                <div class="selector-group">
+                    <label for="tts_voice_dd">TTS Voice</label>
+                    <select id="tts_voice_dd"></select>
+                </div>
+
+                <!-- LLM Model -->
+                <div class="selector-group">
+                    <label for="llm_model_select">
+                        LLM Model
+                        <button type="button" id="refresh-llm-models-btn" title="Refresh model list">↻</button>
+                    </label>
+                    <select id="llm_model_select">
+                        <option value="">— loading… —</option>
+                    </select>
+                </div>
+
+            </div>
+
+            <!-- ── Row 2: STT Engine · Indic Options ────────────── -->
+            <div class="selector-grid" style="grid-template-columns: repeat(auto-fit, minmax(150px,1fr))">
+
+                <!-- STT Engine -->
+                <div class="selector-group">
+                    <label for="stt_engine_select">STT Engine</label>
+                    <select id="stt_engine_select">
+                        <option value="whisper">Whisper</option>
+                        <option value="indic" selected>Indic Conformer</option>
+                    </select>
+                </div>
+
+                <!-- Indic Language (hidden unless indic selected) -->
+                <div class="selector-group" id="indic-lang-group">
+                    <label for="indic_language_select">Indic Language</label>
+                    <select id="indic_language_select">
+                        <option value="bn" selected>Bengali (bn)</option>
+                        <option value="hi">Hindi (hi)</option>
+                        <option value="ta">Tamil (ta)</option>
+                        <option value="te">Telugu (te)</option>
+                        <option value="mr">Marathi (mr)</option>
+                        <option value="gu">Gujarati (gu)</option>
+                        <option value="kn">Kannada (kn)</option>
+                        <option value="ml">Malayalam (ml)</option>
+                        <option value="pa">Punjabi (pa)</option>
+                        <option value="or">Odia (or)</option>
+                        <option value="as">Assamese (as)</option>
+                        <option value="ur">Urdu (ur)</option>
+                        <option value="si">Sinhala (si)</option>
+                        <option value="ne">Nepali (ne)</option>
+                        <option value="sa">Sanskrit (sa)</option>
+                        <option value="en">English (en)</option>
+                    </select>
+                </div>
+
+                <!-- Indic Decode Mode (hidden unless indic selected) -->
+                <div class="selector-group" id="indic-decode-group">
+                    <label for="indic_decode_select">Decode Mode</label>
+                    <select id="indic_decode_select">
+                        <option value="ctc" selected>CTC</option>
+                        <option value="rnnt">RNN-T</option>
+                    </select>
+                </div>
+
+            </div>
+
+            <hr>
+
+            <!-- ── Text Input + Mic ──────────────────────────────── -->
+            <label for="text_input">Your Message
+                <span style="font-weight:400;color:var(--text-muted);text-transform:none;letter-spacing:0">
+                    — or hold <kbd style="background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:1px 5px;font-size:0.75rem;">Space</kbd> for push-to-talk
+                </span>
+            </label>
+            <div class="input-row" style="margin-top:6px">
+                <textarea id="text_input" rows="3"
+                    placeholder="Type a message, click the mic, or hold Space to talk…"></textarea>
+                <button type="button" id="record-button" title="Click to toggle recording">🎤</button>
+                <span id="record-status"></span>
+            </div>
+
+            <button type="submit" id="generate-button">Generate</button>
+
+            <!-- ── LLM Parameters ─────────────────────────────────── -->
+            <details>
+                <summary>LLM Parameters</summary>
+                <div class="details-inner">
+                    <div class="param-row"><label for="llm_temp_slider">Temperature</label><input type="range" id="llm_temp_slider" min="0.0" max="2.0" step="0.01" value="0.7"><span class="param-value" id="llm_temp_value">0.70</span></div>
+                    <div class="param-row"><label for="llm_top_p_slider">Top P</label><input type="range" id="llm_top_p_slider" min="0.0" max="1.0" step="0.01" value="0.9"><span class="param-value" id="llm_top_p_value">0.90</span></div>
+                    <div class="param-row"><label for="llm_rep_penalty_slider">Repetition Penalty</label><input type="range" id="llm_rep_penalty_slider" min="1.0" max="2.0" step="0.01" value="1.1"><span class="param-value" id="llm_rep_penalty_value">1.10</span></div>
+                    <div class="param-row"><label for="llm_top_k_slider">Top K (0 = off)</label><input type="range" id="llm_top_k_slider" min="0" max="100" step="1" value="45"><span class="param-value" id="llm_top_k_value">45</span></div>
+                    <div class="param-row"><label for="llm_max_tokens_input">Max Tokens (−1 = default)</label><input type="number" id="llm_max_tokens_input" value="-1" step="1"></div>
+                </div>
+            </details>
+
+            <!-- ── TTS Parameters ─────────────────────────────────── -->
+            <details>
+                <summary>TTS Parameters</summary>
+                <div class="details-inner">
+                    <div class="param-row"><label for="tts_temp_slider">Temperature</label><input type="range" id="tts_temp_slider" min="0.1" max="2.0" step="0.05" value="2.0"><span class="param-value" id="tts_temp_value">2.00</span></div>
+                    <div class="param-row"><label for="tts_top_p_slider">Top P</label><input type="range" id="tts_top_p_slider" min="0.1" max="1.0" step="0.05" value="0.9"><span class="param-value" id="tts_top_p_value">0.90</span></div>
+                    <div class="param-row"><label for="tts_rep_penalty_slider">Rep. Penalty (fixed)</label><input type="range" id="tts_rep_penalty_slider" min="1.1" max="1.1" step="0.01" value="1.1" disabled><span class="param-value" id="tts_rep_penalty_value">1.10</span></div>
+                    <div class="param-row"><label for="tts_buffer_groups_slider">Initial Buffer (groups)</label><input type="range" id="tts_buffer_groups_slider" min="1" max="100" step="1" value="5"><span class="param-value" id="tts_buffer_groups_value">5</span></div>
+                    <div class="param-row"><label for="tts_padding_ms_slider">Padding (ms)</label><input type="range" id="tts_padding_ms_slider" min="0" max="500" step="1" value="0"><span class="param-value" id="tts_padding_ms_value">0</span></div>
+                    <div class="param-row"><label for="tts_batch_groups_slider">Backend Batch (groups)</label><input type="range" id="tts_batch_groups_slider" min="1" max="10" step="1" value="7"><span class="param-value" id="tts_batch_groups_value">7</span></div>
+                    <div class="param-row"><label for="client_buffer_duration_slider">Client Buffer (sec)</label><input type="range" id="client_buffer_duration_slider" min="0.0" max="2.0" step="0.1" value="0.1"><span class="param-value" id="client_buffer_duration_value">0.10</span></div>
+                </div>
+            </details>
+
+        </form>
+
+        <audio controls id="audio-player" style="display:none;"></audio>
+    </div>
+
+    <footer>
+        <p>Powered by FastAPI · Orpheus TTS · SNAC · Whisper · Indic Conformer · LM Studio</p>
+    </footer>
+
+</div>
+<script src="script.js?v=3"></script>
+</body>
+</html>
