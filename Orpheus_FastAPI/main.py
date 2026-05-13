@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 # --- END LOGGING SETUP ---
 
 # --- Third-Party Imports ---
-from fastapi import FastAPI, HTTPException, UploadFile, File, Query
+from fastapi import FastAPI, HTTPException, UploadFile, File, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
@@ -35,7 +35,7 @@ import indic_stt_engine
 from tts_engine import generate_speech_stream_bytes
 from whisper_stt_engine import transcribe_audio as whisper_transcribe
 from indic_stt_engine import transcribe_audio as indic_transcribe
-from llm_router import router as llm_api_router
+from llm_router import router as llm_api_router, LLMChatRequest, generate_llm_text_stream
 
 # --- End Imports ---
 
@@ -185,6 +185,104 @@ async def list_llm_models():
         return JSONResponse({"models": [], "error": str(e)})
 
 
+@app.websocket("/ws/llm")
+async def websocket_llm_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for streaming LLM output as JSON chunks."""
+    await websocket.accept()
+    request_data = None
+    try:
+        request_data = await websocket.receive_json()
+        if not isinstance(request_data, dict):
+            raise ValueError("Invalid JSON payload")
+
+        logger.info("WebSocket LLM: Received request payload")
+        llm_request = LLMChatRequest(**request_data)
+
+        text_generator = generate_llm_text_stream(
+            prompt=llm_request.prompt,
+            history=llm_request.history,
+            llm_temperature=llm_request.temperature,
+            llm_top_p=llm_request.top_p,
+            llm_max_tokens=llm_request.max_tokens,
+            llm_repetition_penalty=llm_request.repetition_penalty,
+            llm_top_k=llm_request.top_k,
+            model=llm_request.model,
+        )
+
+        async def send_chunk(chunk_text: str):
+            await websocket.send_json({"type": "llm_chunk", "content": chunk_text})
+
+        for chunk in text_generator:
+            await send_chunk(chunk)
+
+        await websocket.send_json({"type": "llm_done"})
+
+    except WebSocketDisconnect:
+        logger.info("WebSocket LLM: Client disconnected")
+    except Exception as exc:
+        logger.exception("WebSocket LLM: Error while streaming")
+        try:
+            await websocket.send_json({"type": "error", "message": str(exc)})
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+@app.websocket("/ws/tts")
+async def websocket_tts_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for streaming TTS audio bytes."""
+    await websocket.accept()
+    try:
+        request_data = await websocket.receive_json()
+        if not isinstance(request_data, dict):
+            raise ValueError("Invalid JSON payload")
+
+        logger.info("WebSocket TTS: Received request payload")
+        tts_request = TTSRequestWithDefaults(**request_data)
+
+        await websocket.send_json({"type": "tts_started", "sample_rate": TARGET_SAMPLE_RATE, "audio_format": "FLOAT32_PCM"})
+
+        audio_generator = generate_speech_stream_bytes(
+            text=tts_request.text,
+            voice=tts_request.voice,
+            tts_temperature=tts_request.tts_temperature,
+            tts_top_p=tts_request.tts_top_p,
+            tts_repetition_penalty=tts_request.tts_repetition_penalty,
+            buffer_groups_param=tts_request.buffer_groups,
+            padding_ms_param=tts_request.padding_ms,
+            min_decode_batch_groups_param=tts_request.min_decode_batch_groups,
+        )
+
+        sent_any_audio = False
+        for audio_chunk in audio_generator:
+            if audio_chunk:
+                sent_any_audio = True
+                await websocket.send_bytes(audio_chunk)
+
+        if not sent_any_audio:
+            await websocket.send_json({"type": "tts_warning", "message": "No audio frames were generated."})
+
+        await websocket.send_json({"type": "tts_done"})
+
+    except WebSocketDisconnect:
+        logger.info("WebSocket TTS: Client disconnected")
+    except Exception as exc:
+        logger.exception("WebSocket TTS: Error while streaming")
+        try:
+            await websocket.send_json({"type": "error", "message": str(exc)})
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
 @app.get("/")
 async def read_root():
     """Serve index.html"""
@@ -199,10 +297,10 @@ async def serve_script():
 
 # --- End FastAPI Endpoints ---
 
+
 if __name__ == "__main__":
     # Models are loaded via the lifespan handler above.
     # Running `python main.py` is equivalent to `uvicorn main:app --host 0.0.0.0 --port 8000`.
     logger.info("Starting FastAPI Server with Uvicorn...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
     logger.info("FastAPI Server Stopped.")
-
