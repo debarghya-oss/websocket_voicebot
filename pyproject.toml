@@ -1,0 +1,19 @@
+[project]
+name = "websocket-voicebot"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.136.1",
+    "huggingface-hub[cli]>=1.14.0",
+    "onnxruntime>=1.26.0",
+    "openai-whisper>=20250625",
+    "requests>=2.34.0",
+    "snac>=1.2.1",
+    "sounddevice>=0.5.5",
+    "torch>=2.11.0",
+    "torchaudio>=2.11.0",
+    "torchvision>=0.26.0",
+    "transformers>=5.8.0",
+]

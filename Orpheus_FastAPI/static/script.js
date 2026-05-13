@@ -42,6 +42,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let clientMinBufferDuration    = 0.1;
     let fetchStreamReaderTTS       = null;
     let currentTTSPlaybackResolver = null;
+    let useWebSocketForAudio       = true;  // Enable WebSocket audio streaming by default
 
     // ================================================================
     // CHAT / LLM STATE
@@ -493,29 +494,6 @@ document.addEventListener('DOMContentLoaded', () => {
             decodeMode
         });
 
-        let url = '/api/stt/transcribe';
-
-        const params = new URLSearchParams();
-
-        params.set('engine', engine);
-
-        if (engine === 'indic') {
-            params.set('language', language);
-            params.set('decode_mode', decodeMode);
-        }
-
-        url += '?' + params.toString();
-
-        console.log("FINAL STT URL:", url);
-
-        const form = new FormData();
-
-        form.append(
-            'audio_file',
-            blob,
-            fileName
-        );
-
         try {
 
             if (recordStatus) {
@@ -523,23 +501,56 @@ document.addEventListener('DOMContentLoaded', () => {
                     `Transcribing (${engine})…`;
             }
 
-            const res = await fetch(url, {
-                method: 'POST',
-                body: form
-            });
+            let result;
 
-            const data = await res.json();
+            // Use WebSocket if enabled, otherwise use HTTP
+            if (useWebSocketForAudio) {
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const wsUrl = `${protocol}//${window.location.host}/ws/stt`;
+                result = await sendAudioViaWebSocket(blob, wsUrl);
+            } else {
+                // Original HTTP-based approach
+                let url = '/api/stt/transcribe';
 
-            console.log("STT RESPONSE:", data);
+                const params = new URLSearchParams();
 
-            if (!res.ok) {
-                throw new Error(
-                    data.detail || 'STT failed'
+                params.set('engine', engine);
+
+                if (engine === 'indic') {
+                    params.set('language', language);
+                    params.set('decode_mode', decodeMode);
+                }
+
+                url += '?' + params.toString();
+
+                console.log("FINAL STT URL:", url);
+
+                const form = new FormData();
+
+                form.append(
+                    'audio_file',
+                    blob,
+                    fileName
                 );
+
+                const res = await fetch(url, {
+                    method: 'POST',
+                    body: form
+                });
+
+                result = await res.json();
+
+                if (!res.ok) {
+                    throw new Error(
+                        result.detail || 'STT failed'
+                    );
+                }
             }
 
+            console.log("STT RESPONSE:", result);
+
             if (textInput) {
-                textInput.value = data.text || '';
+                textInput.value = result.text || '';
             }
 
             if (recordStatus) {
@@ -627,7 +638,230 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // ================================================================
-    // TTS STREAMING HANDLER (Web Audio API)
+    // TTS STREAMING HANDLER (Web Audio API) - HTTP
+    // ================================================================
+    async function streamTTSAudio(response) {
+        if (!audioContext) {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+        }
+        if (audioContext.state === 'suspended') {
+            await audioContext.resume();
+        }
+        
+        const reader = response.body.getReader();
+        let nextStartTime = audioContext.currentTime + 0.2; // Start with a small buffer
+        let leftoverBytes = new Uint8Array(0);
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            // Combine leftover from previous network chunk
+            const totalLength = leftoverBytes.length + value.length;
+            const combined = new Uint8Array(totalLength);
+            combined.set(leftoverBytes, 0);
+            combined.set(value, leftoverBytes.length);
+            
+            // Number of complete floats (4 bytes each)
+            const numFloats = Math.floor(combined.length / 4);
+            const completeBytesLength = numFloats * 4;
+            
+            // Save the remainder
+            leftoverBytes = combined.slice(completeBytesLength);
+            
+            if (numFloats > 0) {
+                // Ensure the buffer is copied out so we can construct a valid Float32Array
+                const slicedBuffer = combined.buffer.slice(combined.byteOffset, combined.byteOffset + completeBytesLength);
+                const float32Data = new Float32Array(slicedBuffer);
+                
+                const audioBuffer = audioContext.createBuffer(1, numFloats, 24000);
+                audioBuffer.copyToChannel(float32Data, 0);
+                
+                const source = audioContext.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(audioContext.destination);
+                
+                // If we fell behind, catch up to current time
+                if (nextStartTime < audioContext.currentTime) {
+                    nextStartTime = audioContext.currentTime + 0.05;
+                }
+                
+                source.start(nextStartTime);
+                nextStartTime += audioBuffer.duration;
+            }
+        }
+    }
+
+    // ================================================================
+    // BASE64 UTILITIES
+    // ================================================================
+    function base64ToArrayBuffer(base64) {
+        const binaryString = atob(base64);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+        return bytes.buffer;
+    }
+
+    function arrayBufferToBase64(buffer) {
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        for (let i = 0; i < bytes.byteLength; i++) {
+            binary += String.fromCharCode(bytes[i]);
+        }
+        return btoa(binary);
+    }
+
+    // ================================================================
+    // TTS WEBSOCKET HANDLER - Base64 Audio Streaming
+    // ================================================================
+    function streamTTSAudioWebSocket(wsUrl, ttsRequest = null) {
+        return new Promise((resolve, reject) => {
+            const ws = new WebSocket(wsUrl);
+            ws.onopen = () => {
+                console.log("TTS WebSocket connected");
+                if (ttsRequest) {
+                    ws.send(JSON.stringify(ttsRequest));
+                }
+            };
+            ws.onmessage = async (event) => {
+                try {
+                    const message = JSON.parse(event.data);
+                    console.log("[TTS WS]", message.type, message);
+
+                    if (message.type === "tts_started") {
+                        if (!audioContext) {
+                            audioContext = new (window.AudioContext || window.webkitAudioContext)({ 
+                                sampleRate: message.sample_rate || 24000 
+                            });
+                        }
+                        if (audioContext.state === 'suspended') {
+                            await audioContext.resume();
+                        }
+                        isPlayingAudio = true;
+                        nextAudioStartTime = audioContext.currentTime + 0.2;
+                    } 
+                    else if (message.type === "tts_audio_chunk") {
+                        // Decode base64 audio
+                        const audioBase64 = message.audio;
+                        const arrayBuffer = base64ToArrayBuffer(audioBase64);
+                        const float32Data = new Float32Array(arrayBuffer);
+
+                        if (float32Data.length > 0) {
+                            const audioBuffer = audioContext.createBuffer(1, float32Data.length, 24000);
+                            audioBuffer.copyToChannel(float32Data, 0);
+
+                            const source = audioContext.createBufferSource();
+                            source.buffer = audioBuffer;
+                            source.connect(audioContext.destination);
+
+                            // If we fell behind, catch up to current time
+                            if (nextAudioStartTime < audioContext.currentTime) {
+                                nextAudioStartTime = audioContext.currentTime + 0.05;
+                            }
+
+                            source.start(nextAudioStartTime);
+                            nextAudioStartTime += audioBuffer.duration;
+                        }
+                    } 
+                    else if (message.type === "tts_done") {
+                        console.log("TTS streaming completed");
+                        isPlayingAudio = false;
+                        ws.close();
+                        resolve();
+                    } 
+                    else if (message.type === "error") {
+                        console.error("TTS WebSocket error:", message.message);
+                        ws.close();
+                        reject(new Error(message.message));
+                    }
+                } catch (err) {
+                    console.error("Error processing TTS message:", err);
+                    reject(err);
+                }
+            };
+            ws.onerror = (error) => {
+                console.error("TTS WebSocket error:", error);
+                reject(error);
+            };
+            ws.onclose = () => {
+                console.log("TTS WebSocket closed");
+                isPlayingAudio = false;
+            };
+        });
+    }
+
+    // ================================================================
+    // STT WEBSOCKET HANDLER - Base64 Audio Upload
+    // ================================================================
+    async function sendAudioViaWebSocket(blob, wsUrl) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const arrayBuffer = e.target.result;
+                const uint8Array = new Uint8Array(arrayBuffer);
+                const base64Audio = arrayBufferToBase64(uint8Array);
+
+                const ws = new WebSocket(wsUrl);
+                ws.onopen = () => {
+                    console.log("STT WebSocket connected, sending audio");
+                    
+                    const {
+                        engine,
+                        language,
+                        decodeMode
+                    } = getSttParams();
+
+                    const payload = {
+                        engine: engine,
+                        language: language,
+                        decode_mode: decodeMode,
+                        audio: base64Audio
+                    };
+
+                    ws.send(JSON.stringify(payload));
+                };
+                ws.onmessage = (event) => {
+                    try {
+                        const message = JSON.parse(event.data);
+                        console.log("[STT WS]", message.type, message);
+
+                        if (message.type === "stt_result") {
+                            resolve({
+                                text: message.text,
+                                engine: message.engine,
+                                language: message.language
+                            });
+                            ws.close();
+                        } 
+                        else if (message.type === "error") {
+                            console.error("STT error:", message.message);
+                            reject(new Error(message.message));
+                            ws.close();
+                        }
+                    } catch (err) {
+                        console.error("Error processing STT message:", err);
+                        reject(err);
+                    }
+                };
+                ws.onerror = (error) => {
+                    console.error("STT WebSocket error:", error);
+                    reject(error);
+                };
+                ws.onclose = () => {
+                    console.log("STT WebSocket closed");
+                };
+            };
+            reader.onerror = () => {
+                reject(new Error("Failed to read blob as ArrayBuffer"));
+            };
+            reader.readAsArrayBuffer(blob);
+        });
+    }
+
+    // ================================================================
+    // TTS STREAMING HANDLER (Web Audio API) - HTTP
     // ================================================================
     async function streamTTSAudio(response) {
         if (!audioContext) {
@@ -732,16 +966,39 @@ document.addEventListener('DOMContentLoaded', () => {
                             min_decode_batch_groups: batchGroups
                         };
 
-                        const response = await fetch('/api/tts/stream', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(ttsReq)
-                        });
+                        if (useWebSocketForAudio) {
+                            // Use WebSocket streaming
+                            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                            const wsUrl = `${protocol}//${window.location.host}/ws/tts`;
+                            
+                            const ws = new WebSocket(wsUrl);
+                            ws.onopen = () => {
+                                ws.send(JSON.stringify(ttsReq));
+                            };
+                            ws.onmessage = async (event) => {
+                                const message = JSON.parse(event.data);
+                                if (message.type === "tts_done") {
+                                    ws.close();
+                                }
+                            };
+                            ws.onerror = (error) => {
+                                throw new Error("WebSocket connection failed");
+                            };
 
-                        if (!response.ok) throw new Error("TTS Request failed");
+                            await streamTTSAudioWebSocket(wsUrl);
+                        } else {
+                            // Use HTTP streaming
+                            const response = await fetch('/api/tts/stream', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(ttsReq)
+                            });
 
-                        // Play audio dynamically as chunks arrive
-                        await streamTTSAudio(response);
+                            if (!response.ok) throw new Error("TTS Request failed");
+
+                            // Play audio dynamically as chunks arrive
+                            await streamTTSAudio(response);
+                        }
 
                     } catch (err) {
                         console.error("TTS Error:", err);
@@ -851,17 +1108,30 @@ document.addEventListener('DOMContentLoaded', () => {
                             min_decode_batch_groups: batchGroups
                         };
 
-                        const ttsResponse = await fetch('/api/tts/stream', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(ttsReq)
-                        });
+                        try {
+                            if (useWebSocketForAudio) {
+                                // Use WebSocket streaming
+                                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                                const wsUrl = `${protocol}//${window.location.host}/ws/tts`;
+                                
+                                await streamTTSAudioWebSocket(wsUrl, ttsReq);
+                            } else {
+                                // Use HTTP streaming
+                                const ttsResponse = await fetch('/api/tts/stream', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify(ttsReq)
+                                });
 
-                        if (ttsResponse.ok) {
-                            // Play audio dynamically as chunks arrive
-                            await streamTTSAudio(ttsResponse);
-                        } else {
-                            console.error("TTS generation failed after LLM completion.");
+                                if (ttsResponse.ok) {
+                                    // Play audio dynamically as chunks arrive
+                                    await streamTTSAudio(ttsResponse);
+                                } else {
+                                    console.error("TTS generation failed after LLM completion.");
+                                }
+                            }
+                        } catch (err) {
+                            console.error("TTS generation error:", err);
                         }
                     }
 
