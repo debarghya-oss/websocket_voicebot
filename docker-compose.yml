@@ -1,0 +1,110 @@
+# ── Volumes ──────────────────────────────────────────────────
+volumes:
+  milvus-etcd:
+  milvus-minio:
+  milvus-data:
+  rag-uploads:
+
+# ── Network ──────────────────────────────────────────────────
+networks:
+  rag-net:
+    driver: bridge
+
+services:
+
+  # ── etcd (Milvus metadata store) ─────────────────────────
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.14
+    container_name: milvus-etcd
+    restart: unless-stopped
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"   # 4 GB
+      ETCD_SNAPSHOT_COUNT: "50000"
+    command: >
+      etcd
+      --advertise-client-urls=http://etcd:2379
+      --listen-client-urls=http://0.0.0.0:2379
+      --data-dir=/etcd
+    volumes:
+      - milvus-etcd:/etcd
+    networks:
+      - rag-net
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ── MinIO (Milvus object store) ───────────────────────────
+  minio:
+    image: minio/minio:RELEASE.2024-05-10T01-41-38Z
+    container_name: milvus-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    command: minio server /minio_data --console-address ":9001"
+    volumes:
+      - milvus-minio:/minio_data
+    networks:
+      - rag-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://minio:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ── Milvus standalone ─────────────────────────────────────
+  milvus-standalone:
+    image: milvusdb/milvus:v2.4.13
+    container_name: milvus-standalone
+    restart: unless-stopped
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    volumes:
+      - milvus-data:/var/lib/milvus
+    ports:
+      - "19530:19530"   # gRPC — RAG service connects here
+      - "9091:9091"     # Milvus metrics / health
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - rag-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://milvus-standalone:9091/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+
+  # ── RAG Knowledge Base service ────────────────────────────
+  rag-service:
+    build:
+      context: ./rag-service
+      dockerfile: Dockerfile
+    container_name: rag-service
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Override host resolution — on Linux the bridge gateway reaches the host
+      LM_STUDIO_BASE_URL: ${LM_STUDIO_BASE_URL:-http://172.17.0.1:1234}
+    volumes:
+      - rag-uploads:/uploads
+    ports:
+      - "8000:8000"
+    depends_on:
+      milvus-standalone:
+        condition: service_healthy
+    networks:
+      - rag-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
