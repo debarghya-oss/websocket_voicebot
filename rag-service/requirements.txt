@@ -1,0 +1,26 @@
+# Web framework
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+python-multipart==0.0.9
+
+# Milvus client
+pymilvus==2.4.4
+
+# LangChain
+langchain==0.2.6
+langchain-community==0.2.6
+
+# Embeddings (BGE-small)
+sentence-transformers==3.0.1
+huggingface-hub==0.23.4
+
+# Document loaders
+pypdf==4.2.0
+docx2txt==0.8
+
+# LLM client
+requests==2.32.3
+
+# Utilities
+pydantic==2.7.4
+python-dotenv==1.0.1
