@@ -35,6 +35,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // AUDIO STATE
     // ================================================================
     let audioContext               = null;
+    let currentAudioSampleRate     = 8000;  // Default 8kHz for landline, will be updated by server
     let audioBufferQueue           = [];
     let isPlayingAudio             = false;
     let nextAudioStartTime         = 0;
@@ -641,8 +642,13 @@ document.addEventListener('DOMContentLoaded', () => {
     // TTS STREAMING HANDLER (Web Audio API) - HTTP
     // ================================================================
     async function streamTTSAudio(response) {
+        // Get sample rate from response headers
+        const headerSampleRate = parseInt(response.headers.get('X-Sample-Rate') || '8000');
+        currentAudioSampleRate = headerSampleRate;
+        console.log(`TTS Sample Rate from server: ${currentAudioSampleRate}Hz`);
+        
         if (!audioContext) {
-            audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+            audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: currentAudioSampleRate });
         }
         if (audioContext.state === 'suspended') {
             await audioContext.resume();
@@ -674,7 +680,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const slicedBuffer = combined.buffer.slice(combined.byteOffset, combined.byteOffset + completeBytesLength);
                 const float32Data = new Float32Array(slicedBuffer);
                 
-                const audioBuffer = audioContext.createBuffer(1, numFloats, 24000);
+                const audioBuffer = audioContext.createBuffer(1, numFloats, currentAudioSampleRate);
                 audioBuffer.copyToChannel(float32Data, 0);
                 
                 const source = audioContext.createBufferSource();
@@ -731,9 +737,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     console.log("[TTS WS]", message.type, message);
 
                     if (message.type === "tts_started") {
+                        // Get sample rate from server message or use default
+                        currentAudioSampleRate = message.sample_rate || 8000;
+                        console.log(`TTS started with sample rate: ${currentAudioSampleRate}Hz`);
+                        
                         if (!audioContext) {
                             audioContext = new (window.AudioContext || window.webkitAudioContext)({ 
-                                sampleRate: message.sample_rate || 24000 
+                                sampleRate: currentAudioSampleRate
                             });
                         }
                         if (audioContext.state === 'suspended') {
@@ -749,7 +759,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         const float32Data = new Float32Array(arrayBuffer);
 
                         if (float32Data.length > 0) {
-                            const audioBuffer = audioContext.createBuffer(1, float32Data.length, 24000);
+                            const audioBuffer = audioContext.createBuffer(1, float32Data.length, currentAudioSampleRate);
                             audioBuffer.copyToChannel(float32Data, 0);
 
                             const source = audioContext.createBufferSource();
@@ -858,61 +868,6 @@ document.addEventListener('DOMContentLoaded', () => {
             };
             reader.readAsArrayBuffer(blob);
         });
-    }
-
-    // ================================================================
-    // TTS STREAMING HANDLER (Web Audio API) - HTTP
-    // ================================================================
-    async function streamTTSAudio(response) {
-        if (!audioContext) {
-            audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
-        }
-        if (audioContext.state === 'suspended') {
-            await audioContext.resume();
-        }
-        
-        const reader = response.body.getReader();
-        let nextStartTime = audioContext.currentTime + 0.2; // Start with a small buffer
-        let leftoverBytes = new Uint8Array(0);
-
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            
-            // Combine leftover from previous network chunk
-            const totalLength = leftoverBytes.length + value.length;
-            const combined = new Uint8Array(totalLength);
-            combined.set(leftoverBytes, 0);
-            combined.set(value, leftoverBytes.length);
-            
-            // Number of complete floats (4 bytes each)
-            const numFloats = Math.floor(combined.length / 4);
-            const completeBytesLength = numFloats * 4;
-            
-            // Save the remainder
-            leftoverBytes = combined.slice(completeBytesLength);
-            
-            if (numFloats > 0) {
-                // Ensure the buffer is copied out so we can construct a valid Float32Array
-                const slicedBuffer = combined.buffer.slice(combined.byteOffset, combined.byteOffset + completeBytesLength);
-                const float32Data = new Float32Array(slicedBuffer);
-                
-                const audioBuffer = audioContext.createBuffer(1, numFloats, 24000);
-                audioBuffer.copyToChannel(float32Data, 0);
-                
-                const source = audioContext.createBufferSource();
-                source.buffer = audioBuffer;
-                source.connect(audioContext.destination);
-                
-                // If we fell behind, catch up to current time
-                if (nextStartTime < audioContext.currentTime) {
-                    nextStartTime = audioContext.currentTime + 0.05;
-                }
-                
-                source.start(nextStartTime);
-                nextStartTime += audioBuffer.duration;
-            }
-        }
     }
 
     // ================================================================

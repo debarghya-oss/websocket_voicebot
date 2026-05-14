@@ -24,11 +24,24 @@ ORPHEUS_N_LAYERS = 7
 ORPHEUS_MAX_ID = ORPHEUS_MIN_ID + (ORPHEUS_N_LAYERS * ORPHEUS_TOKENS_PER_LAYER)
 
 # --- AUDIO PROCESSING CONSTANTS ---
-TARGET_SAMPLE_RATE = 24000
-TTS_STREAM_MIN_GROUPS = 1
-TTS_STREAM_SILENCE_MS = 0
-DEFAULT_MIN_DECODE_BATCH_GROUPS = 10
-TTS_STREAM_PARTIAL_BATCH_TIMEOUT_MS = 100
+# SNAC model output rate
+SNAC_SAMPLE_RATE = 24000
+# Target output rate for client (8000 Hz for landline compatibility, 24000 for high-quality)
+TARGET_SAMPLE_RATE = int(os.getenv("TARGET_SAMPLE_RATE", "8000"))
+# Enable automatic resampling from SNAC (24kHz) to target rate
+ENABLE_RESAMPLING = TARGET_SAMPLE_RATE != SNAC_SAMPLE_RATE
+
+# --- IMPROVED CHUNKING STRATEGY FOR GLITCH PREVENTION ---
+# Increased buffer to prevent underruns (3 groups = ~33ms at 24kHz before sending)
+TTS_STREAM_MIN_GROUPS = int(os.getenv("TTS_STREAM_MIN_GROUPS", "3"))
+# Silence padding between chunks to prevent audio overlap/glitching (50ms)
+TTS_STREAM_SILENCE_MS = int(os.getenv("TTS_STREAM_SILENCE_MS", "50"))
+# Increased batch decode size for smoother chunking (5 groups = ~55ms)
+DEFAULT_MIN_DECODE_BATCH_GROUPS = int(os.getenv("DEFAULT_MIN_DECODE_BATCH_GROUPS", "5"))
+# Increased timeout to wait for complete code groups (150ms instead of 100ms)
+TTS_STREAM_PARTIAL_BATCH_TIMEOUT_MS = int(os.getenv("TTS_STREAM_PARTIAL_BATCH_TIMEOUT_MS", "150"))
+# Audio fade duration for smoother chunk transitions (5ms instead of 1ms)
+TTS_AUDIO_FADE_MS = int(os.getenv("TTS_AUDIO_FADE_MS", "5"))
 
 # --- VOICE CONSTANTS ---
 ALL_VOICES = ["tara", "jess", "leo", "leah", "dan", "mia", "zac", "zoe"]
