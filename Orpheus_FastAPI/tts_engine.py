@@ -8,11 +8,11 @@ import numpy as np
 
 from config import (
     TTS_API_ENDPOINT, TTS_MODEL, TTS_PROMPT_FORMAT, TTS_PROMPT_STOP_TOKENS,
-    ORPHEUS_N_LAYERS, TARGET_SAMPLE_RATE, STREAM_TIMEOUT_SECONDS, 
+    ORPHEUS_N_LAYERS, SNAC_SAMPLE_RATE, TARGET_SAMPLE_RATE, STREAM_TIMEOUT_SECONDS, 
     STREAM_HEADERS, SSE_DATA_PREFIX, SSE_DONE_MARKER,
-    TTS_STREAM_PARTIAL_BATCH_TIMEOUT_MS, DEVICE
+    TTS_STREAM_PARTIAL_BATCH_TIMEOUT_MS, DEVICE, ENABLE_RESAMPLING, TTS_AUDIO_FADE_MS
 )
-from audio_utils import parse_gguf_codes, redistribute_codes, apply_fade
+from audio_utils import parse_gguf_codes, redistribute_codes, apply_fade, resample_audio
 
 logger = logging.getLogger(__name__)
 
@@ -183,8 +183,18 @@ def generate_speech_stream_bytes(
 
                                             if audio_chunk is not None and audio_chunk.size > 0:
                                                 logger.debug(f"--- SNAC: Decoded flush chunk ({len(codes_to_decode_batch)} codes -> {audio_chunk.size} samples) in {snac_decode_end_time - snac_decode_start_time:.3f}s.")
-                                                faded_chunk = apply_fade(audio_chunk, TARGET_SAMPLE_RATE, fade_ms=1)
-                                                audio_bytes_to_yield = faded_chunk.astype(np.float32).tobytes()
+                                                
+                                                # Apply fade for smooth transitions
+                                                faded_chunk = apply_fade(audio_chunk, SNAC_SAMPLE_RATE, fade_ms=TTS_AUDIO_FADE_MS)
+                                                
+                                                # Resample from SNAC rate (24kHz) to target rate if needed
+                                                if ENABLE_RESAMPLING:
+                                                    resampled_chunk = resample_audio(faded_chunk, SNAC_SAMPLE_RATE, TARGET_SAMPLE_RATE)
+                                                    logger.debug(f"Resampled from {SNAC_SAMPLE_RATE}Hz to {TARGET_SAMPLE_RATE}Hz")
+                                                else:
+                                                    resampled_chunk = faded_chunk
+                                                
+                                                audio_bytes_to_yield = resampled_chunk.astype(np.float32).tobytes()
                                                 yield audio_bytes_to_yield
                                                 stream_successful = True
                                                 last_code_received_time = time.time()
@@ -220,8 +230,18 @@ def generate_speech_stream_bytes(
             snac_decode_end_time = time.time()
             if audio_chunk is not None and audio_chunk.size > 0:
                 logger.debug(f"--- SNAC: Decoded final chunk ({len(codes_to_decode_final)} codes -> {audio_chunk.size} samples) in {snac_decode_end_time - snac_decode_start_time:.3f}s.")
-                faded_chunk = apply_fade(audio_chunk, TARGET_SAMPLE_RATE, fade_ms=1)
-                audio_bytes_to_yield = faded_chunk.astype(np.float32).tobytes()
+                
+                # Apply fade for smooth transitions
+                faded_chunk = apply_fade(audio_chunk, SNAC_SAMPLE_RATE, fade_ms=TTS_AUDIO_FADE_MS)
+                
+                # Resample from SNAC rate (24kHz) to target rate if needed
+                if ENABLE_RESAMPLING:
+                    resampled_chunk = resample_audio(faded_chunk, SNAC_SAMPLE_RATE, TARGET_SAMPLE_RATE)
+                    logger.debug(f"Resampled final from {SNAC_SAMPLE_RATE}Hz to {TARGET_SAMPLE_RATE}Hz")
+                else:
+                    resampled_chunk = faded_chunk
+                
+                audio_bytes_to_yield = resampled_chunk.astype(np.float32).tobytes()
                 yield audio_bytes_to_yield
                 stream_successful = True
             else:

@@ -146,7 +146,17 @@ def redistribute_codes(codes: List[int], model: nn.Module) -> Optional[np.ndarra
 
 
 def apply_fade(audio_chunk: np.ndarray, sample_rate: int, fade_ms: int = 5) -> np.ndarray:
-    """Applies a fade in/out to an audio chunk."""
+    """
+    Applies a fade in/out to an audio chunk for smooth transitions.
+    
+    Args:
+        audio_chunk: Float32 numpy array
+        sample_rate: Sample rate of the audio (used to calculate fade duration)
+        fade_ms: Fade duration in milliseconds (default 5ms for smooth transitions)
+    
+    Returns:
+        Audio chunk with fade applied
+    """
     if audio_chunk is None or audio_chunk.size == 0:
         return audio_chunk
     num_fade_samples = int(sample_rate * (fade_ms / 1000.0))
@@ -156,7 +166,7 @@ def apply_fade(audio_chunk: np.ndarray, sample_rate: int, fade_ms: int = 5) -> n
     fade_out = np.linspace(1., 0., num_fade_samples, dtype=audio_chunk.dtype)
     audio_chunk[:num_fade_samples] *= fade_in
     audio_chunk[-num_fade_samples:] *= fade_out
-    logger.debug(f"Applied {fade_ms}ms fade to audio chunk.")
+    logger.debug(f"Applied {fade_ms}ms fade to audio chunk at {sample_rate}Hz.")
     return audio_chunk
 
 
@@ -214,3 +224,54 @@ def decode_base64_to_float32(audio_base64: str) -> Optional[np.ndarray]:
     except Exception as e:
         logger.error(f"Failed to decode base64 to float32: {e}")
         return None
+
+
+# ================================================================
+# AUDIO RESAMPLING
+# ================================================================
+def resample_audio(audio_chunk: np.ndarray, orig_sample_rate: int, target_sample_rate: int) -> np.ndarray:
+    """
+    Resample audio from original sample rate to target sample rate.
+    Uses linear interpolation for fast, efficient resampling.
+    
+    Args:
+        audio_chunk: Float32 numpy array of audio samples
+        orig_sample_rate: Original sample rate (e.g., 24000)
+        target_sample_rate: Target sample rate (e.g., 8000)
+    
+    Returns:
+        Resampled audio as float32 numpy array
+    """
+    if audio_chunk is None or audio_chunk.size == 0:
+        return audio_chunk
+    
+    if orig_sample_rate == target_sample_rate:
+        return audio_chunk
+    
+    try:
+        # Calculate resampling ratio
+        ratio = target_sample_rate / orig_sample_rate
+        orig_length = len(audio_chunk)
+        target_length = int(np.round(orig_length * ratio))
+        
+        if target_length <= 0:
+            logger.warning(f"Resample: Target length {target_length} is invalid. Returning original.")
+            return audio_chunk
+        
+        # Use linear interpolation for smooth resampling
+        x_orig = np.arange(orig_length)
+        x_target = np.arange(target_length) / ratio
+        
+        # Linear interpolation
+        resampled = np.interp(x_target, x_orig, audio_chunk)
+        
+        logger.debug(
+            f"Resampled audio from {orig_sample_rate}Hz ({orig_length} samples) "
+            f"to {target_sample_rate}Hz ({target_length} samples)"
+        )
+        
+        return resampled.astype(np.float32)
+    
+    except Exception as e:
+        logger.error(f"Resampling failed: {e}. Returning original audio.")
+        return audio_chunk
