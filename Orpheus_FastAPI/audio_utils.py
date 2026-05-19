@@ -2,6 +2,7 @@ import re
 import numpy as np
 import torch
 from torch import nn
+import torchaudio
 import logging
 from typing import List, Optional
 import base64
@@ -249,28 +250,24 @@ def resample_audio(audio_chunk: np.ndarray, orig_sample_rate: int, target_sample
         return audio_chunk
     
     try:
-        # Calculate resampling ratio
-        ratio = target_sample_rate / orig_sample_rate
-        orig_length = len(audio_chunk)
-        target_length = int(np.round(orig_length * ratio))
+        # High-quality anti-aliased resampling using torchaudio
+        audio_tensor = torch.from_numpy(audio_chunk).float()
         
-        if target_length <= 0:
-            logger.warning(f"Resample: Target length {target_length} is invalid. Returning original.")
-            return audio_chunk
-        
-        # Use linear interpolation for smooth resampling
-        x_orig = np.arange(orig_length)
-        x_target = np.arange(target_length) / ratio
-        
-        # Linear interpolation
-        resampled = np.interp(x_target, x_orig, audio_chunk)
-        
+        # Add channel dim if it's 1D
+        if audio_tensor.ndim == 1:
+            audio_tensor = audio_tensor.unsqueeze(0)
+            resampled_tensor = torchaudio.functional.resample(audio_tensor, orig_sample_rate, target_sample_rate)
+            resampled = resampled_tensor.squeeze(0).numpy()
+        else:
+            resampled_tensor = torchaudio.functional.resample(audio_tensor, orig_sample_rate, target_sample_rate)
+            resampled = resampled_tensor.numpy()
+            
         logger.debug(
-            f"Resampled audio from {orig_sample_rate}Hz ({orig_length} samples) "
-            f"to {target_sample_rate}Hz ({target_length} samples)"
+            f"Resampled audio from {orig_sample_rate}Hz ({len(audio_chunk)} samples) "
+            f"to {target_sample_rate}Hz ({len(resampled)} samples) using torchaudio."
         )
         
-        return resampled.astype(np.float32)
+        return resampled
     
     except Exception as e:
         logger.error(f"Resampling failed: {e}. Returning original audio.")

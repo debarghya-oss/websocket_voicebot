@@ -26,6 +26,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const refreshLlmModelsBtn  = document.getElementById('refresh-llm-models-btn');
     const llmMaxTokensInput    = document.getElementById('llm_max_tokens_input');
 
+    // Conversation Mode
+    const conversationToggleBtn = document.getElementById('conversation-toggle-btn');
+    const vadDot                = document.getElementById('vad-dot');
+    const conversationStatus    = document.getElementById('conversation-status');
+
     // ================================================================
     // STATIC DATA
     // ================================================================
@@ -67,6 +72,18 @@ document.addEventListener('DOMContentLoaded', () => {
     let isRecording        = false;
     let isPushToTalkActive = false;
     let spaceBarIsDown     = false;
+
+    // ================================================================
+    // CONVERSATION MODE STATE
+    // ================================================================
+    let conversationActive         = false;
+    let conversationWs             = null;  // WebSocket for /ws/conversation
+    let conversationMediaStream    = null;  // MediaStream from getUserMedia
+    let conversationAudioContext   = null;  // AudioContext for mic processing
+    let conversationProcessorNode  = null;  // ScriptProcessorNode for raw PCM
+    let conversationSourceNodes    = [];    // Active TTS AudioBufferSourceNodes (for barge-in cancel)
+    let conversationNextStartTime  = 0;     // Next TTS audio start time
+    let conversationLLMText        = '';    // Accumulated LLM text for current turn
 
     // ================================================================
     // INIT TTS VOICES
@@ -1107,6 +1124,357 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
         );
+    }
+
+    // ================================================================
+    // CONVERSATION MODE
+    // ================================================================
+
+    function setConversationStatus(text, isActive = false) {
+        if (conversationStatus) {
+            conversationStatus.textContent = text;
+            conversationStatus.classList.toggle('active-status', isActive);
+        }
+    }
+
+    function setVadDot(isSpeaking) {
+        if (vadDot) {
+            vadDot.classList.toggle('speaking', isSpeaking);
+        }
+    }
+
+    function cancelConversationTTSPlayback() {
+        // Stop all scheduled TTS audio source nodes
+        conversationSourceNodes.forEach(node => {
+            try { node.stop(); } catch(e) { /* already stopped */ }
+        });
+        conversationSourceNodes = [];
+        conversationNextStartTime = 0;
+    }
+
+    async function startConversation() {
+        if (conversationActive) return;
+
+        console.log('[Conversation] Starting...');
+
+        // Request microphone
+        try {
+            conversationMediaStream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    sampleRate: 16000,
+                    channelCount: 1,
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true,
+                }
+            });
+        } catch (err) {
+            console.error('[Conversation] Mic permission denied:', err);
+            alert('Microphone permission is required for conversation mode.');
+            return;
+        }
+
+        // Create AudioContext for mic processing
+        // Note: Browser may not honor 16kHz sampleRate; we'll resample if needed
+        conversationAudioContext = new (window.AudioContext || window.webkitAudioContext)({
+            sampleRate: 16000
+        });
+        const actualSampleRate = conversationAudioContext.sampleRate;
+        console.log(`[Conversation] AudioContext sample rate: ${actualSampleRate}Hz`);
+
+        // Open WebSocket
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws/conversation`;
+        conversationWs = new WebSocket(wsUrl);
+
+        conversationWs.onopen = () => {
+            console.log('[Conversation] WebSocket connected');
+
+            // Send config
+            const { engine, language, decodeMode } = getSttParams();
+            const voice = ttsVoiceSelect ? ttsVoiceSelect.value : 'tara';
+            const model = llmModelSelect ? llmModelSelect.value : null;
+
+            const configMsg = {
+                type: 'config',
+                engine: engine,
+                language: language,
+                decode_mode: decodeMode,
+                voice: voice,
+                model: model,
+                temperature: parseFloat(document.getElementById('llm_temp_slider')?.value || '0.7'),
+                top_p: parseFloat(document.getElementById('llm_top_p_slider')?.value || '0.9'),
+                repetition_penalty: parseFloat(document.getElementById('llm_rep_penalty_slider')?.value || '1.1'),
+                top_k: parseInt(document.getElementById('llm_top_k_slider')?.value || '45'),
+                max_tokens: parseInt(document.getElementById('llm_max_tokens_input')?.value || '-1'),
+                tts_temperature: parseFloat(document.getElementById('tts_temp_slider')?.value || '2.0'),
+                tts_top_p: parseFloat(document.getElementById('tts_top_p_slider')?.value || '0.9'),
+                tts_repetition_penalty: 1.1,
+                buffer_groups: parseInt(document.getElementById('tts_buffer_groups_slider')?.value || '5'),
+                padding_ms: parseInt(document.getElementById('tts_padding_ms_slider')?.value || '0'),
+                min_decode_batch_groups: parseInt(document.getElementById('tts_batch_groups_slider')?.value || '7'),
+                sample_rate: conversationAudioContext ? conversationAudioContext.sampleRate : 16000
+            };
+
+            conversationWs.send(JSON.stringify(configMsg));
+            console.log('[Conversation] Config sent:', configMsg);
+
+            // Start streaming mic audio
+            _startMicStreaming();
+        };
+
+        conversationWs.onmessage = async (event) => {
+            try {
+                const msg = JSON.parse(event.data);
+                _handleConversationMessage(msg);
+            } catch (err) {
+                console.error('[Conversation] Message parse error:', err);
+            }
+        };
+
+        conversationWs.onerror = (err) => {
+            console.error('[Conversation] WebSocket error:', err);
+        };
+
+        conversationWs.onclose = () => {
+            console.log('[Conversation] WebSocket closed');
+            if (conversationActive) {
+                stopConversation();
+            }
+        };
+
+        // Update UI
+        conversationActive = true;
+        if (conversationToggleBtn) {
+            conversationToggleBtn.textContent = '⏹ End Conversation';
+            conversationToggleBtn.classList.add('active');
+        }
+        setConversationStatus('Listening…', true);
+        setVadDot(false);
+    }
+
+    function _startMicStreaming() {
+        if (!conversationAudioContext || !conversationMediaStream || !conversationWs) return;
+
+        const source = conversationAudioContext.createMediaStreamSource(conversationMediaStream);
+        const actualSampleRate = conversationAudioContext.sampleRate;
+
+        // ScriptProcessorNode with 4096 buffer for batching
+        // At 16kHz this is ~256ms of audio per callback
+        const bufferSize = 4096;
+        conversationProcessorNode = conversationAudioContext.createScriptProcessor(
+            bufferSize, 1, 1
+        );
+
+        const actualSampleRate = conversationAudioContext.sampleRate;
+        console.log(`[Conversation] Mic streaming: actualRate=${actualSampleRate}, sending raw to backend for high-quality resampling`);
+
+        conversationProcessorNode.onaudioprocess = (e) => {
+            if (!conversationActive || !conversationWs || conversationWs.readyState !== WebSocket.OPEN) return;
+
+            let float32Data = e.inputBuffer.getChannelData(0);
+
+            // Convert float32 (-1..1) to int16 for bandwidth efficiency
+            const int16Data = new Int16Array(float32Data.length);
+            for (let i = 0; i < float32Data.length; i++) {
+                const s = Math.max(-1, Math.min(1, float32Data[i]));
+                int16Data[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+            }
+
+            // Encode to base64
+            const uint8View = new Uint8Array(int16Data.buffer);
+            const b64 = arrayBufferToBase64(uint8View);
+
+            conversationWs.send(JSON.stringify({
+                type: 'audio_chunk',
+                audio: b64
+            }));
+        };
+
+        source.connect(conversationProcessorNode);
+        conversationProcessorNode.connect(conversationAudioContext.destination);
+        console.log('[Conversation] Mic streaming started');
+    }
+
+    function _handleConversationMessage(msg) {
+        switch (msg.type) {
+            case 'config_ack':
+                console.log('[Conversation] Config acknowledged');
+                break;
+
+            case 'vad_state':
+                setVadDot(msg.is_speaking);
+                break;
+
+            case 'listening':
+                setConversationStatus('Listening…', true);
+                setVadDot(false);
+                break;
+
+            case 'processing':
+                const stageLabels = { stt: 'Transcribing…', llm: 'Thinking…', tts: 'Speaking…' };
+                setConversationStatus(stageLabels[msg.stage] || 'Processing…', true);
+                break;
+
+            case 'transcript':
+                // User's transcribed speech
+                addUserMessage(msg.text);
+                setConversationStatus('Thinking…', true);
+                break;
+
+            case 'llm_chunk': {
+                // Stream LLM text into the chat
+                if (!conversationLLMText) {
+                    // First chunk — create assistant message
+                    const el = addAssistantMessage('', true);
+                    currentAssistantMessageContentElement = el;
+                    conversationLLMText = '';
+                }
+                conversationLLMText += msg.content;
+                if (currentAssistantMessageContentElement) {
+                    currentAssistantMessageContentElement.textContent = conversationLLMText;
+                    if (chatHistoryDisplay) {
+                        chatHistoryDisplay.scrollTop = chatHistoryDisplay.scrollHeight;
+                    }
+                }
+                setConversationStatus('Thinking…', true);
+                break;
+            }
+
+            case 'llm_done': {
+                // Finalize assistant message
+                const lastMsg = chatHistory[chatHistory.length - 1];
+                if (lastMsg && lastMsg.role === 'assistant') {
+                    lastMsg.content = conversationLLMText;
+                    lastMsg.isStreaming = false;
+                }
+                if (currentAssistantMessageContentElement) {
+                    currentAssistantMessageContentElement.classList.remove('streaming-llm-content');
+                }
+                conversationLLMText = '';
+                currentAssistantMessageContentElement = null;
+                setConversationStatus('Speaking…', true);
+                break;
+            }
+
+            case 'tts_started':
+                currentAudioSampleRate = msg.sample_rate || 8000;
+                _ensureAudioContext(currentAudioSampleRate);
+                conversationNextStartTime = audioContext.currentTime + 0.15;
+                conversationSourceNodes = [];
+                setConversationStatus('Speaking…', true);
+                break;
+
+            case 'tts_audio_chunk': {
+                if (!audioContext) break;
+                const arrayBuf = base64ToArrayBuffer(msg.audio);
+                const float32Data = new Float32Array(arrayBuf);
+                if (float32Data.length > 0) {
+                    const audioBuf = audioContext.createBuffer(1, float32Data.length, currentAudioSampleRate);
+                    audioBuf.copyToChannel(float32Data, 0);
+                    const srcNode = audioContext.createBufferSource();
+                    srcNode.buffer = audioBuf;
+                    srcNode.connect(audioContext.destination);
+                    if (conversationNextStartTime < audioContext.currentTime) {
+                        conversationNextStartTime = audioContext.currentTime + 0.05;
+                    }
+                    srcNode.start(conversationNextStartTime);
+                    conversationNextStartTime += audioBuf.duration;
+                    conversationSourceNodes.push(srcNode);
+                }
+                break;
+            }
+
+            case 'tts_done':
+                console.log('[Conversation] TTS done');
+                // Status will be updated when 'listening' message arrives
+                break;
+
+            case 'interrupt':
+                console.log('[Conversation] BARGE-IN: Cancelling TTS playback');
+                cancelConversationTTSPlayback();
+                conversationLLMText = '';
+                currentAssistantMessageContentElement = null;
+                setConversationStatus('Listening…', true);
+                break;
+
+            case 'error':
+                console.error('[Conversation] Server error:', msg.message);
+                setConversationStatus(`Error: ${msg.message}`, false);
+                break;
+
+            default:
+                console.log('[Conversation] Unknown message:', msg);
+        }
+    }
+
+    async function _ensureAudioContext(sampleRate) {
+        if (!audioContext) {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                sampleRate: sampleRate
+            });
+        }
+        if (audioContext.state === 'suspended') {
+            await audioContext.resume();
+        }
+    }
+
+    function stopConversation() {
+        console.log('[Conversation] Stopping...');
+        conversationActive = false;
+
+        // Stop TTS playback
+        cancelConversationTTSPlayback();
+
+        // Close WebSocket
+        if (conversationWs) {
+            try {
+                conversationWs.send(JSON.stringify({ type: 'stop' }));
+                conversationWs.close();
+            } catch (e) { /* ignore */ }
+            conversationWs = null;
+        }
+
+        // Stop mic processing
+        if (conversationProcessorNode) {
+            try { conversationProcessorNode.disconnect(); } catch(e) {}
+            conversationProcessorNode = null;
+        }
+
+        // Close audio context for mic
+        if (conversationAudioContext) {
+            try { conversationAudioContext.close(); } catch(e) {}
+            conversationAudioContext = null;
+        }
+
+        // Stop media stream tracks
+        if (conversationMediaStream) {
+            conversationMediaStream.getTracks().forEach(t => t.stop());
+            conversationMediaStream = null;
+        }
+
+        // Reset state
+        conversationLLMText = '';
+        currentAssistantMessageContentElement = null;
+
+        // Update UI
+        if (conversationToggleBtn) {
+            conversationToggleBtn.textContent = '🎙️ Start Conversation';
+            conversationToggleBtn.classList.remove('active');
+        }
+        setConversationStatus('Inactive', false);
+        setVadDot(false);
+    }
+
+    // Conversation toggle button handler
+    if (conversationToggleBtn) {
+        conversationToggleBtn.addEventListener('click', () => {
+            if (conversationActive) {
+                stopConversation();
+            } else {
+                startConversation();
+            }
+        });
     }
 
     // ================================================================

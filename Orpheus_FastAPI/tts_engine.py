@@ -10,7 +10,10 @@ from config import (
     TTS_API_ENDPOINT, TTS_MODEL, TTS_PROMPT_FORMAT, TTS_PROMPT_STOP_TOKENS,
     ORPHEUS_N_LAYERS, SNAC_SAMPLE_RATE, TARGET_SAMPLE_RATE, STREAM_TIMEOUT_SECONDS, 
     STREAM_HEADERS, SSE_DATA_PREFIX, SSE_DONE_MARKER,
-    TTS_STREAM_PARTIAL_BATCH_TIMEOUT_MS, DEVICE, ENABLE_RESAMPLING, TTS_AUDIO_FADE_MS
+    TTS_STREAM_PARTIAL_BATCH_TIMEOUT_MS, DEVICE, ENABLE_RESAMPLING, TTS_AUDIO_FADE_MS,
+    TTS_FREQUENCY_PENALTY, TTS_PRESENCE_PENALTY, TTS_REPEAT_LAST_N,
+    TTS_MAX_DURATION_MULTIPLIER, TTS_ESTIMATED_CHARS_PER_SEC,
+    TTS_REPEAT_PATTERN_MIN_LEN, TTS_REPEAT_PATTERN_THRESHOLD, TTS_REPEAT_CHECK_INTERVAL
 )
 from audio_utils import parse_gguf_codes, redistribute_codes, apply_fade, resample_audio
 
@@ -53,6 +56,35 @@ def load_snac_model() -> Optional[Any]:
         return None
 
 
+def _detect_code_repetition(codes: list, min_pattern_len: int, threshold: int) -> bool:
+    """Detect if tail of code sequence contains a repeating pattern.
+
+    Scans backwards from the end of *codes* looking for a contiguous pattern
+    of length *min_pattern_len* that repeats at least *threshold* times.
+    Designed to be cheap: single linear scan, no allocations.
+    """
+    n = len(codes)
+    needed = min_pattern_len * threshold
+    if n < needed:
+        return False
+
+    # Only check pattern_len == min_pattern_len for speed (covers 3-group loops)
+    pat_start = n - min_pattern_len
+    for rep in range(1, threshold):
+        cmp_start = pat_start - min_pattern_len * rep
+        if cmp_start < 0:
+            return False
+        # Compare slice by slice
+        match = True
+        for j in range(min_pattern_len):
+            if codes[pat_start + j] != codes[cmp_start + j]:
+                match = False
+                break
+        if not match:
+            return False
+    return True
+
+
 def generate_speech_stream_bytes(
     text: str, voice: str, tts_temperature: float, tts_top_p: float,
     tts_repetition_penalty: float, buffer_groups_param: int, padding_ms_param: int,
@@ -89,10 +121,22 @@ def generate_speech_stream_bytes(
     payload = {
         "model": TTS_MODEL, "prompt": TTS_PROMPT_FORMAT.format(voice=voice, text=text),
         "temperature": tts_temperature, "top_p": tts_top_p, "repeat_penalty": tts_repetition_penalty,
+        "frequency_penalty": TTS_FREQUENCY_PENALTY,
+        "presence_penalty": TTS_PRESENCE_PENALTY,
+        "repeat_last_n": TTS_REPEAT_LAST_N,
         "n_predict": -1, "stop": TTS_PROMPT_STOP_TOKENS, "stream": True
     }
     
     accumulated_codes = []
+    all_codes_history: list = []  # full history for repetition detection (ints only, cheap)
+    total_codes_received = 0
+
+    # Pre-compute max codes ceiling from text length (simple int math, zero overhead)
+    _est_dur = max(len(text) / TTS_ESTIMATED_CHARS_PER_SEC, 2.0)
+    # ~11.7 code-groups/sec at 24kHz SNAC (24000/2048), times 7 codes per group
+    _codes_per_sec = (SNAC_SAMPLE_RATE / 2048) * ORPHEUS_N_LAYERS
+    max_total_codes = int(_est_dur * TTS_MAX_DURATION_MULTIPLIER * _codes_per_sec)
+
     request_initiation_time = time.time()
     response_obj = None
     stream_successful = False
@@ -156,7 +200,29 @@ def generate_speech_stream_bytes(
                                 logger.info(f"--- TTS METRIC: Time to first audio token chunk parsed: {calculated_ttft_ms:.2f} ms (from stream connected) ---")
                             
                             accumulated_codes.extend(new_codes)
+                            all_codes_history.extend(new_codes)
+                            total_codes_received += len(new_codes)
                             last_code_received_time = time.time()
+
+                            # --- Lightweight repetition guard (cheap int checks) ---
+                            if total_codes_received > max_total_codes:
+                                logger.warning(
+                                    f"TTS: Runaway generation — {total_codes_received} codes "
+                                    f"exceeds max {max_total_codes} for {len(text)}-char text. "
+                                    f"Stopping early."
+                                )
+                                break
+
+                            if (total_codes_received % TTS_REPEAT_CHECK_INTERVAL == 0
+                                    and _detect_code_repetition(
+                                        all_codes_history,
+                                        TTS_REPEAT_PATTERN_MIN_LEN,
+                                        TTS_REPEAT_PATTERN_THRESHOLD)):
+                                logger.warning(
+                                    f"TTS: Repeating code pattern detected after "
+                                    f"{total_codes_received} codes. Stopping early."
+                                )
+                                break
 
                             if not initial_buffer_processed and len(accumulated_codes) >= codes_per_group:
                                 initial_buffer_processed = True
