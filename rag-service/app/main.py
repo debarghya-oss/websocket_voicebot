@@ -13,6 +13,9 @@ from .llm import generate_answer
 from .vectorstore import init_collection, get_collection_stats
 from .modelfile_store import get_status as modelfile_status
 
+from pathlib import Path
+from .modelfile_store import set_modelfile
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -37,10 +40,24 @@ app.include_router(ingest_router)
 app.include_router(modelfile_router)
 
 
+MODELFILE_PATH = Path("assistant.modelfile")
+
 @app.on_event("startup")
 async def startup():
     logger.info("Initializing Milvus collection...")
     init_collection()
+
+    # Load default Modelfile at startup
+    if MODELFILE_PATH.exists():
+        try:
+            set_modelfile(
+                MODELFILE_PATH.read_text(encoding="utf-8"),
+                MODELFILE_PATH.name,
+            )
+            logger.info("Default Modelfile loaded.")
+        except Exception as e:
+            logger.error("Failed to load Modelfile: %s", e)
+
     logger.info("RAG Knowledge Base ready.")
 
 
