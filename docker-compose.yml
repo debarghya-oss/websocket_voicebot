@@ -97,7 +97,7 @@ services:
     volumes:
       - rag-uploads:/uploads
     ports:
-      - "8000:8000"
+      - "8080:8000"
     depends_on:
       milvus-standalone:
         condition: service_healthy

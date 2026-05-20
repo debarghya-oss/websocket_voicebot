@@ -1,4 +1,3 @@
-
 # --- Standard Library Imports ---
 import logging
 import sys
@@ -33,7 +32,7 @@ import tts_engine
 import whisper_stt_engine
 import indic_stt_engine
 from tts_engine import generate_speech_stream_bytes
-from whisper_stt_engine import transcribe_audio as whisper_transcribe
+from whisper_stt_engine import transcribe_audio as whisper_transcribe, transcribe_audio_from_path as whisper_transcribe_path
 from indic_stt_engine import transcribe_audio as indic_transcribe
 from llm_router import router as llm_api_router, LLMChatRequest, generate_llm_text_stream
 from audio_utils import encode_audio_to_base64, decode_audio_from_base64, encode_float32_chunk_to_base64, decode_base64_to_float32
@@ -360,15 +359,15 @@ async def websocket_stt_endpoint(websocket: WebSocket):
 
             # Transcribe based on selected engine
             if engine == "whisper":
-                transcript = whisper_transcribe(tmp_path)
+                result = await whisper_transcribe_path(tmp_path)
             elif engine == "indic":
-                transcript = indic_transcribe(tmp_path, language=language, decode_mode=decode_mode)
+                result = await indic_transcribe(tmp_path, language=language, decode_mode=decode_mode)
             else:
-                transcript = indic_transcribe(tmp_path, language=language, decode_mode=decode_mode)
+                result = await indic_transcribe(tmp_path, language=language, decode_mode=decode_mode)
 
             await websocket.send_json({
                 "type": "stt_result",
-                "text": transcript,
+                "text": result.text,
                 "engine": engine,
                 "language": language
             })

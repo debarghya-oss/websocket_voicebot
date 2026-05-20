@@ -11,7 +11,7 @@ from pymilvus import (
 
 logger = logging.getLogger(__name__)
 
-MILVUS_HOST = os.getenv("MILVUS_HOST", "milvus-standalone")
+MILVUS_HOST = os.getenv("MILVUS_HOST", "localhost")
 MILVUS_PORT = int(os.getenv("MILVUS_PORT", "19530"))
 COLLECTION_NAME = os.getenv("MILVUS_COLLECTION", "rag_chunks")
 EMBEDDING_DIM = 384  # BAAI/bge-small-en-v1.5

@@ -7,18 +7,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .routers.ingest import router as ingest_router
+from .routers.modelfile import router as modelfile_router
 from .retriever import retrieve_chunks
 from .llm import generate_answer
 from .vectorstore import init_collection, get_collection_stats
+from .modelfile_store import get_status as modelfile_status
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="RAG Knowledge Base",
-    version="2.1.0",
+    version="2.2.0",
     description=(
         "Local RAG service — Milvus HNSW retrieval + LM Studio (gemma3 4b). "
+        "Upload a Modelfile to define the assistant persona. "
         "Use /retrieve for chunks only, /ask for a full grounded answer with citations."
     ),
 )
@@ -31,6 +34,7 @@ app.add_middleware(
 )
 
 app.include_router(ingest_router)
+app.include_router(modelfile_router)
 
 
 @app.on_event("startup")
@@ -78,9 +82,10 @@ class CitationSource(BaseModel):
 
 class AskResponse(BaseModel):
     answer: str
-    sources: List[CitationSource]   # Improvement 2: citations returned to caller
+    sources: List[CitationSource]
     total_chunks_retrieved: int
     latency_ms: float
+    modelfile_active: bool          # tells caller which persona generated this answer
 
 
 # ── Routes ───────────────────────────────────────────────────
@@ -162,4 +167,5 @@ def ask(req: AskRequest):
         sources=[CitationSource(**s) for s in result["sources"]],
         total_chunks_retrieved=len(chunks),
         latency_ms=round((time.perf_counter() - t0) * 1000, 2),
+        modelfile_active=modelfile_status()["active"],
     )

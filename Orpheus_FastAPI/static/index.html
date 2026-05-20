@@ -87,6 +87,101 @@
         }
         .card:hover { border-color: rgba(7,241,202,0.2); }
 
+        /* ── User Prompt Card ──────────────────────────────────────────── */
+        #user-prompt-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 16px 20px;
+            margin-bottom: 16px;
+            box-shadow: var(--shadow);
+            transition: border-color 0.2s;
+        }
+        #user-prompt-card:hover { border-color: rgba(7,241,202,0.2); }
+
+        .prompt-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+        .prompt-header-left {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .prompt-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent);
+            box-shadow: 0 0 6px rgba(7,241,202,0.7);
+            animation: pulse-dot 2.5s ease-in-out infinite;
+            flex-shrink: 0;
+        }
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50%       { opacity: 0.5; transform: scale(0.75); }
+        }
+        .prompt-label {
+            font-size: 0.73rem;
+            font-weight: 700;
+            color: var(--accent);
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+        }
+
+        #apply-prompt-btn {
+            width: auto;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 7px 18px;
+            font-size: 0.82rem;
+            font-weight: 700;
+            margin-top: 0;
+            border-radius: var(--radius);
+            background: var(--accent);
+            color: var(--btn-text);
+            border: none;
+            letter-spacing: 0.5px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        #apply-prompt-btn:hover:not(:disabled) {
+            background: var(--accent-dim);
+            box-shadow: 0 0 14px var(--accent-glow);
+        }
+        #apply-prompt-btn.applied {
+            background: var(--accent-dark);
+            color: var(--accent);
+            border: 1px solid var(--accent-dim);
+        }
+
+        #user-prompt-textarea {
+            width: 100%;
+            padding: 10px 12px;
+            background: var(--bg-input);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            font-family: inherit;
+            font-size: 0.88rem;
+            line-height: 1.55;
+            resize: vertical;
+            min-height: 72px;
+            outline: none;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        #user-prompt-textarea:focus {
+            border-color: var(--border-focus);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+        #user-prompt-textarea::placeholder {
+            color: var(--text-muted);
+            font-style: italic;
+        }
+
         /* ── Chat History ──────────────────────────────────────────────── */
         #chat-history-display {
             height: 380px;
@@ -254,6 +349,83 @@
             white-space: nowrap;
         }
 
+        /* ── Upload button ─────────────────────────────────────────────── */
+        #upload-button {
+            flex-shrink: 0;
+            width: 42px;
+            height: 42px;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--bg-input);
+            color: var(--accent);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 1.1em;
+            margin-top: 0;
+        }
+        #upload-button:hover:not(:disabled) {
+            border-color: var(--accent);
+            background: var(--accent-dark);
+        }
+        #upload-button.has-file {
+            border-color: var(--accent);
+            background: var(--accent-dark);
+            box-shadow: 0 0 8px var(--accent-glow);
+        }
+        #file-input { display: none; }
+
+        /* ── File chip ─────────────────────────────────────────────────── */
+        #file-chip-row {
+            display: none;
+            align-items: center;
+            gap: 8px;
+            margin-top: -6px;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+        }
+        #file-chip-row.visible { display: flex; }
+        .file-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: var(--accent-dark);
+            border: 1px solid var(--accent-dim);
+            border-radius: 999px;
+            padding: 3px 10px 3px 8px;
+            font-size: 0.75rem;
+            color: var(--accent);
+            font-weight: 500;
+            max-width: 280px;
+            overflow: hidden;
+        }
+        .file-chip-icon { font-size: 0.85em; flex-shrink: 0; }
+        .file-chip-name {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .file-chip-size { color: var(--text-muted); font-size: 0.7rem; flex-shrink: 0; }
+        .file-chip-status { font-size: 0.7rem; font-weight: 600; flex-shrink: 0; }
+        .file-chip-remove {
+            flex-shrink: 0;
+            cursor: pointer;
+            color: var(--text-muted);
+            font-size: 0.9em;
+            line-height: 1;
+            transition: color 0.15s;
+            background: none;
+            border: none;
+            padding: 0;
+            width: auto;
+            margin: 0;
+            display: inline-flex;
+        }
+        .file-chip-remove:hover { color: var(--error); background: none; box-shadow: none; }
+
         /* ── Buttons ───────────────────────────────────────────────────── */
         button {
             display: block;
@@ -412,6 +584,22 @@
         <p class="subtitle">Orpheus TTS &nbsp;·&nbsp; Whisper &amp; Indic Conformer STT &nbsp;·&nbsp; Local LLM</p>
     </header>
 
+    <!-- ── User Prompt ────────────────────────────────────────────── -->
+    <div id="user-prompt-card">
+        <div class="prompt-header">
+            <div class="prompt-header-left">
+                <span class="prompt-dot"></span>
+                <span class="prompt-label">User Prompt</span>
+            </div>
+            <button type="button" id="apply-prompt-btn">Apply</button>
+        </div>
+        <textarea
+            id="user-prompt-textarea"
+            rows="3"
+            placeholder="Describe how the assistant should behave — e.g. 'You are an IT support agent for Acme Corp. Be concise and always ask for the ticket number first.'"
+        ></textarea>
+    </div>
+
     <!-- ── Chat History ───────────────────────────────────────────── -->
     <div class="card">
         <div class="section-label">Conversation</div>
@@ -512,8 +700,11 @@
                 <textarea id="text_input" rows="3"
                     placeholder="Type a message, click the mic, or hold Space to talk…"></textarea>
                 <button type="button" id="record-button" title="Click to toggle recording">🎤</button>
+                <button type="button" id="upload-button" title="Upload a document">🔗</button>
+                <input type="file" id="file-input" accept=".pdf,.txt,.md,.doc,.docx,.csv,.json,.py,.js,.ts,.html,.xml">
                 <span id="record-status"></span>
             </div>
+            <div id="file-chip-row"></div>
 
             <button type="submit" id="generate-button">Generate</button>
 
@@ -553,6 +744,7 @@
     </footer>
 
 </div>
+
 <script src="script.js?v=3"></script>
 </body>
 </html>

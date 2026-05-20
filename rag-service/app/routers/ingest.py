@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 
-UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "/uploads"))
+UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "uploads"))
 
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
 

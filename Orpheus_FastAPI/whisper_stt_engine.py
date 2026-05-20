@@ -102,3 +102,29 @@ async def transcribe_audio(audio_file) -> STTResponse:
             except Exception as cleanup_e:
                 logger.warning(f"Failed to clean up temporary audio file '{tmp_audio_file_path}': {cleanup_e}")
         await audio_file.close()
+
+
+async def transcribe_audio_from_path(file_path: str) -> STTResponse:
+    """Transcribe audio from a file path (used by WebSocket STT handler)."""
+    global whisper_model
+
+    request_id = str(int(time.time() * 1000))
+
+    if whisper_model is None:
+        logger.error(f"[{request_id}] STT: Whisper model is None - not initialized.")
+        return STTResponse(text="", error="STT service unavailable: Whisper model not loaded. Check server logs.")
+
+    try:
+        stt_start_time = time.time()
+        result = whisper_model.transcribe(file_path, language="bn", fp16=(DEVICE == "cuda"))
+        stt_duration = time.time() - stt_start_time
+
+        transcribed_text = result["text"].strip()
+        detected_language = result.get("language", "unknown")
+
+        logger.info(f"[{request_id}] Transcription successful in {stt_duration:.3f}s. Language: '{detected_language}'. Text: '{transcribed_text[:100]}...'")
+        return STTResponse(text=transcribed_text, language=detected_language)
+
+    except Exception as e:
+        logger.exception(f"[{request_id}] Error during transcription for path '{file_path}'")
+        return STTResponse(text="", error=f"Transcription failed: {str(e)}")
