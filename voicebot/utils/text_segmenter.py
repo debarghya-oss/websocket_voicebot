@@ -1,8 +1,15 @@
 # text_segmenter.py
-import pysbd  # Ensure 'pip install pysbd'
+"""
+Sentence segmentation using pysbd.
+
+Identifies complete sentences from streaming or block text for TTS pipelines.
+"""
 import logging
 
+import pysbd  # Ensure 'pip install pysbd'
+
 logger = logging.getLogger(__name__)
+
 
 class TextSegmenter:
     """
@@ -24,10 +31,10 @@ class TextSegmenter:
         """
         Processes a text chunk and returns a list of identified sentences immediately.
         Optimized for 193 tokens/ms rate - processes without delays or unnecessary buffering.
-        
+
         Args:
             text_chunk (str): Text to segment (can be partial or complete).
-            
+
         Returns:
             list[str]: List of identified sentences.
         """
@@ -37,7 +44,7 @@ class TextSegmenter:
 
         if not isinstance(text_chunk, str):
             return []
-        
+
         self.buffer += text_chunk
 
         if not self.buffer.strip():

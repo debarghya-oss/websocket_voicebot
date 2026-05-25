@@ -1,11 +1,17 @@
 # sentence_chunker.py
-from typing import List, Generator
+"""
+Sentence chunker for TTS pipelines.
+
+Groups sentences from TextSegmenter into N-sentence chunks suitable for
+streaming TTS generation.
+"""
+from typing import Generator, List
 import logging
 
-# Assuming TextSegmenter is in text_segmenter.py as per your setup
-from text_segmenter import TextSegmenter 
+from voicebot.utils.text_segmenter import TextSegmenter
 
 logger = logging.getLogger(__name__)
+
 
 class SentenceChunkerForTTS:
     """
@@ -35,23 +41,23 @@ class SentenceChunkerForTTS:
             logger.debug("chunk_text called with empty or whitespace-only text.")
             return
 
-        self.text_segmenter.clear_buffer() 
-        
+        self.text_segmenter.clear_buffer()
+
         processed_text = full_text.strip()
         # Add a period to help pysbd finalize the last sentence if it's not terminated
         # and if there's actual content.
         if processed_text and not processed_text.endswith(tuple(self.text_segmenter.terminators)):
             logger.debug("Appending a period to help finalize segmentation of: '%s...'", processed_text[:50])
-            processed_text += "." 
-            
+            processed_text += "."
+
         all_sentences = self.text_segmenter.add_text(processed_text)
-        
+
         # Handle any remaining text in TextSegmenter's buffer, considering it a final sentence/fragment.
         remainder = self.text_segmenter.get_remaining_text() # .strip() already in get_remaining_text
         if remainder: # Check if remainder is not just whitespace
             logger.debug(f"Appending remainder from TextSegmenter: '{remainder[:50]}...'")
             all_sentences.append(remainder)
-        
+
         # Filter out any empty strings that might have resulted from segmentation.
         all_sentences = [s for s in all_sentences if s.strip()]
 
@@ -63,18 +69,18 @@ class SentenceChunkerForTTS:
 
         current_sentence_group: List[str] = []
         chunk_count = 0
-        
+
         for sentence in all_sentences:
             current_sentence_group.append(sentence)
             if len(current_sentence_group) >= self.sentences_per_chunk:
                 chunk_to_yield = " ".join(current_sentence_group).strip()
                 chunk_count += 1
-                logger.debug(f"TTS chunk {chunk_count}: {len(chunk_to_yield)} chars - '{chunk_to_yield[:80]}...'") 
+                logger.debug(f"TTS chunk {chunk_count}: {len(chunk_to_yield)} chars - '{chunk_to_yield[:80]}...'")
                 yield chunk_to_yield
                 current_sentence_group = []
-        
+
         if current_sentence_group:
             chunk_to_yield = " ".join(current_sentence_group).strip()
             chunk_count += 1
-            logger.debug(f"TTS final chunk {chunk_count}: {len(chunk_to_yield)} chars - '{chunk_to_yield[:80]}...'") 
+            logger.debug(f"TTS final chunk {chunk_count}: {len(chunk_to_yield)} chars - '{chunk_to_yield[:80]}...'")
             yield chunk_to_yield

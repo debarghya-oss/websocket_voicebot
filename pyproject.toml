@@ -16,4 +16,6 @@ dependencies = [
     "torchaudio>=2.11.0",
     "torchvision>=0.26.0",
     "transformers>=5.8.0",
+    "pysbd>=0.3.4",
+    "httpx>=0.28.0",
 ]
