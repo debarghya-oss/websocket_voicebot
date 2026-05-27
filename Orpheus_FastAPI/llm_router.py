@@ -11,6 +11,8 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from rag_tool import maybe_get_rag_context
+
 logger = logging.getLogger(__name__) # Will inherit root logger's config from main_fastapi.py
 
 # --- LLM Constants ---
@@ -63,6 +65,8 @@ class LLMChatRequest(BaseModel):
     max_tokens: int = DEFAULT_LMSTUDIO_MAX_TOKENS
     repetition_penalty: float = DEFAULT_LMSTUDIO_REP_PENALTY
     top_k: Optional[int] = DEFAULT_LMSTUDIO_TOP_K
+    rag_topic_filter: Optional[str] = None  # pin a RAG topic (e.g. "patient_records"); None = auto-detect
+    has_docs: bool = False                  # True when frontend has ingested docs → skips intent check
 # --- End Pydantic Model ---
 
 # --- LLM Stream Generator Function ---
@@ -74,7 +78,9 @@ def generate_llm_text_stream(
     llm_max_tokens: int,
     llm_repetition_penalty: float,
     llm_top_k: Optional[int] = None,
-    model: Optional[str] = None
+    model: Optional[str] = None,
+    rag_topic_filter: Optional[str] = None,
+    has_docs: bool = False
 ) -> Generator[str, None, None]:
     request_id = str(uuid.uuid4())
     logger.info(f"[{request_id}] LLM Router: Initiating LLM stream request.")
@@ -83,7 +89,17 @@ def generate_llm_text_stream(
     selected_model = model if model else LMSTUDIO_MODEL
     logger.info(f"[{request_id}] LLM Router: Using model: {selected_model}")
 
-    messages = [{"role": "system", "content": LMSTUDIO_SYSTEM_PROMPT}]
+    # --- RAG Tool: optional knowledge injection ---
+    rag_context, rag_sources = maybe_get_rag_context(prompt, topic_filter=rag_topic_filter, force=has_docs)
+    if rag_context:
+        logger.info(f"[{request_id}] LLM Router: RAG context injected ({len(rag_context)} chars), {len(rag_sources)} source(s).")
+        system_prompt = LMSTUDIO_SYSTEM_PROMPT + "\n\n" + rag_context
+    else:
+        logger.info(f"[{request_id}] LLM Router: No RAG context — standard response.")
+        system_prompt = LMSTUDIO_SYSTEM_PROMPT
+    # --- End RAG Tool ---
+
+    messages = [{"role": "system", "content": system_prompt}]
     if history:
         limited_history = history[-(LLM_CONTEXT_TURN_LIMIT * 2):] # Send N*2 previous messages for N turns
         messages.extend(limited_history)
@@ -165,6 +181,8 @@ def generate_llm_text_stream(
                     logger.exception(f"[{request_id}] LLM Router: Error processing LLM stream chunk data: '{json_str[:100]}...'")
                     yield f"{LLM_FAILED_PREFIX} (Processing Error: {str(e_proc)})"; error_occurred_in_stream = True; break
         logger.info(f"[{request_id}] LLM Router: LLM stream processing loop finished after {time.time() - stream_start_time:.3f}s.")
+        if rag_sources:
+            yield "\n__RAG_SOURCES__:" + json.dumps(rag_sources)
 
     except requests.exceptions.Timeout:
         logger.error(f"[{request_id}] LLM Router:  LLM API stream request timed out after {STREAM_TIMEOUT_SECONDS} seconds.", exc_info=True)
@@ -207,7 +225,9 @@ async def llm_chat_stream_endpoint_router(request_data: LLMChatRequest):
         llm_max_tokens=request_data.max_tokens,
         llm_repetition_penalty=request_data.repetition_penalty,
         llm_top_k=request_data.top_k,
-        model=request_data.model
+        model=request_data.model,
+        rag_topic_filter=request_data.rag_topic_filter,
+        has_docs=request_data.has_docs,
     )
     return StreamingResponse(text_generator, media_type="text/event-stream")
 # --- End LLM Chat Endpoint Definition ---

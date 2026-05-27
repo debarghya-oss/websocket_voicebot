@@ -207,6 +207,8 @@ async def websocket_llm_endpoint(websocket: WebSocket):
             llm_repetition_penalty=llm_request.repetition_penalty,
             llm_top_k=llm_request.top_k,
             model=llm_request.model,
+            rag_topic_filter=llm_request.rag_topic_filter,
+            has_docs=llm_request.has_docs,
         )
 
         async def send_chunk(chunk_text: str):

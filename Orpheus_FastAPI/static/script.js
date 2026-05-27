@@ -716,101 +716,93 @@ document.addEventListener('DOMContentLoaded', () => {
 
             try {
 
-                // ── RAG path: at least one document is fully ingested ──
-                if (ragActive) {
-                    if (generateButton) generateButton.textContent = "Searching docs…";
+                // ── LLM streaming path (backend decides if RAG is needed) ──
+                const temp       = parseFloat(document.getElementById('llm_temp_slider')?.value       || "0.7");
+                const topP       = parseFloat(document.getElementById('llm_top_p_slider')?.value       || "0.9");
+                const repPenalty = parseFloat(document.getElementById('llm_rep_penalty_slider')?.value || "1.1");
+                const topK       = parseInt(document.getElementById('llm_top_k_slider')?.value         || "45");
+                const maxTokens  = parseInt(llmMaxTokensInput?.value                                   || "-1");
+                const model      = llmModelSelect ? llmModelSelect.value : null;
 
-                    const ragResult = await askRAG(userText, 5);
-                    const answer    = ragResult.answer || "No answer returned.";
+                const historyForAPI = chatHistory
+                    .filter(msg => !msg.isStreaming && msg.role !== 'system')
+                    .slice(0, -1)
+                    .map(msg => ({ role: msg.role, content: msg.content }));
 
-                    // Display answer
-                    accumulatedLLMTextForDisplay = answer;
-                    if (currentAssistantMessageContentElement) {
-                        currentAssistantMessageContentElement.textContent = answer;
+                const requestBody = {
+                    prompt: userText,
+                    history: historyForAPI,
+                    model, temperature: temp, top_p: topP,
+                    max_tokens: maxTokens, repetition_penalty: repPenalty, top_k: topK,
+                    rag_topic_filter: null,  // null = auto-detect; set e.g. "patient_records" to pin a topic
+                    has_docs: true            // always retrieve; score threshold (0.65) decides injection
+                };
 
-                        // Append source citations if any
-                        if (ragResult.sources && ragResult.sources.length > 0) {
-                            const srcDiv = document.createElement('div');
-                            srcDiv.style.cssText = 'margin-top:8px;font-size:0.72rem;color:var(--text-muted);border-top:1px solid var(--border);padding-top:6px;';
-                            srcDiv.textContent = '📚 Sources: ' + ragResult.sources
-                                .map(s => `${s.document} (${s.topic}, score: ${s.score})`)
-                                .join(' · ');
-                            currentAssistantMessageContentElement.parentElement.appendChild(srcDiv);
-                        }
-                    }
+                if (window.userSystemPrompt) {
+                    requestBody.system_prompt = window.userSystemPrompt;
+                }
 
-                    // Update history
-                    const lastMsg = chatHistory[chatHistory.length - 1];
-                    if (lastMsg && lastMsg.role === 'assistant') {
-                        lastMsg.content = answer; lastMsg.isStreaming = false;
-                    }
-                    chatHistoryDisplay.scrollTop = chatHistoryDisplay.scrollHeight;
+                const response = await fetch('/api/llm/chat/stream', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestBody)
+                });
 
-                    // Speak if LLM+TTS
-                    if (mode === 'llm_tts' && answer.trim()) {
-                        if (generateButton) generateButton.textContent = "Generating TTS…";
-                        await speakText(answer);
-                    }
+                if (!response.ok) throw new Error(`Server returned ${response.status}: ${response.statusText}`);
 
-                } else {
-                    // ── Standard LLM streaming path ───────────────────
-                    const temp       = parseFloat(document.getElementById('llm_temp_slider')?.value       || "0.7");
-                    const topP       = parseFloat(document.getElementById('llm_top_p_slider')?.value       || "0.9");
-                    const repPenalty = parseFloat(document.getElementById('llm_rep_penalty_slider')?.value || "1.1");
-                    const topK       = parseInt(document.getElementById('llm_top_k_slider')?.value         || "45");
-                    const maxTokens  = parseInt(llmMaxTokensInput?.value                                   || "-1");
-                    const model      = llmModelSelect ? llmModelSelect.value : null;
+                const reader  = response.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let done      = false;
 
-                    const historyForAPI = chatHistory
-                        .filter(msg => !msg.isStreaming && msg.role !== 'system')
-                        .slice(0, -1)
-                        .map(msg => ({ role: msg.role, content: msg.content }));
+                while (!done) {
+                    const { value, done: readerDone } = await reader.read();
+                    done = readerDone;
+                    if (value) {
+                        const chunk = decoder.decode(value, { stream: true });
 
-                    const requestBody = {
-                        prompt: userText,
-                        history: historyForAPI,
-                        model, temperature: temp, top_p: topP,
-                        max_tokens: maxTokens, repetition_penalty: repPenalty, top_k: topK
-                    };
+                        // Check for RAG sources sentinel anywhere in the chunk
+                        const sentinelKey = '\n__RAG_SOURCES__:';
+                        const sentinelIdx = (accumulatedLLMTextForDisplay + chunk).indexOf(sentinelKey);
 
-                    // Inject user system prompt if set
-                    if (window.userSystemPrompt) {
-                        requestBody.system_prompt = window.userSystemPrompt;
-                    }
-
-                    const response = await fetch('/api/llm/chat/stream', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(requestBody)
-                    });
-
-                    if (!response.ok) throw new Error(`Server returned ${response.status}: ${response.statusText}`);
-
-                    const reader  = response.body.getReader();
-                    const decoder = new TextDecoder('utf-8');
-                    let done      = false;
-
-                    while (!done) {
-                        const { value, done: readerDone } = await reader.read();
-                        done = readerDone;
-                        if (value) {
-                            accumulatedLLMTextForDisplay += decoder.decode(value, { stream: true });
+                        if (sentinelIdx !== -1) {
+                            // Split: text before sentinel + JSON after
+                            const fullSoFar   = accumulatedLLMTextForDisplay + chunk;
+                            const textPart    = fullSoFar.substring(0, sentinelIdx);
+                            const jsonPart    = fullSoFar.substring(sentinelIdx + sentinelKey.length).trim();
+                            accumulatedLLMTextForDisplay = textPart;
+                            if (currentAssistantMessageContentElement) {
+                                currentAssistantMessageContentElement.textContent = textPart;
+                            }
+                            // Render source chips
+                            try {
+                                const sources = JSON.parse(jsonPart);
+                                if (sources.length > 0 && currentAssistantMessageContentElement) {
+                                    const srcDiv = document.createElement('div');
+                                    srcDiv.style.cssText = 'margin-top:8px;font-size:0.72rem;color:var(--text-muted);border-top:1px solid var(--border);padding-top:6px;';
+                                    srcDiv.textContent = '📚 ' + sources
+                                        .map(s => `${s.document} (${s.topic}, score: ${s.score})`)
+                                        .join(' · ');
+                                    currentAssistantMessageContentElement.parentElement.appendChild(srcDiv);
+                                }
+                            } catch(e) { console.warn('RAG sources parse error', e); }
+                        } else {
+                            accumulatedLLMTextForDisplay += chunk;
                             if (currentAssistantMessageContentElement) {
                                 currentAssistantMessageContentElement.textContent = accumulatedLLMTextForDisplay;
-                                chatHistoryDisplay.scrollTop = chatHistoryDisplay.scrollHeight;
                             }
                         }
+                        chatHistoryDisplay.scrollTop = chatHistoryDisplay.scrollHeight;
                     }
+                }
 
-                    const lastMsg = chatHistory[chatHistory.length - 1];
-                    if (lastMsg && lastMsg.role === 'assistant') {
-                        lastMsg.content = accumulatedLLMTextForDisplay; lastMsg.isStreaming = false;
-                    }
+                const lastMsg = chatHistory[chatHistory.length - 1];
+                if (lastMsg && lastMsg.role === 'assistant') {
+                    lastMsg.content = accumulatedLLMTextForDisplay; lastMsg.isStreaming = false;
+                }
 
-                    if (mode === 'llm_tts' && accumulatedLLMTextForDisplay.trim()) {
-                        if (generateButton) generateButton.textContent = "Generating TTS…";
-                        await speakText(accumulatedLLMTextForDisplay);
-                    }
+                if (mode === 'llm_tts' && accumulatedLLMTextForDisplay.trim()) {
+                    if (generateButton) generateButton.textContent = "Generating TTS…";
+                    await speakText(accumulatedLLMTextForDisplay);
                 }
 
             } catch (err) {
