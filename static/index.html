@@ -393,6 +393,77 @@
         .engine-badge.whisper { color: #60a5fa; }
         .engine-badge.indic   { color: #f59e0b; }
 
+        /* ── Conversation Mode ────────────────────────────────────────── */
+        .conversation-controls {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 14px;
+        }
+        #conversation-toggle-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 20px;
+            font-size: 0.9rem;
+            font-weight: 700;
+            font-family: inherit;
+            border-radius: var(--radius);
+            cursor: pointer;
+            transition: all 0.25s;
+            border: 2px solid var(--accent);
+            background: var(--accent-dark);
+            color: var(--accent);
+            letter-spacing: 0.5px;
+            width: auto;
+            margin-top: 0;
+        }
+        #conversation-toggle-btn:hover {
+            background: var(--accent);
+            color: var(--btn-text);
+            box-shadow: var(--glow);
+        }
+        #conversation-toggle-btn.active {
+            background: var(--error-bg);
+            border-color: var(--error);
+            color: var(--error);
+            animation: pulse-rec 1.5s infinite;
+        }
+        #conversation-toggle-btn.active:hover {
+            background: #4b2020;
+        }
+
+        .vad-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .vad-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--border);
+            transition: all 0.15s;
+        }
+        .vad-dot.speaking {
+            background: #22c55e;
+            box-shadow: 0 0 8px rgba(34,197,94,0.6), 0 0 16px rgba(34,197,94,0.3);
+            animation: vad-pulse 0.8s ease-in-out infinite;
+        }
+        @keyframes vad-pulse {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50%      { transform: scale(1.3); opacity: 0.8; }
+        }
+        #conversation-status {
+            font-size: 0.78rem;
+            color: var(--text-muted);
+            font-style: italic;
+            letter-spacing: 0.3px;
+        }
+        #conversation-status.active-status {
+            color: var(--accent);
+        }
+
         /* ── Separator ─────────────────────────────────────────────────── */
         hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
 
@@ -432,6 +503,15 @@
                         <option value="llm_tts" selected>LLM + TTS</option>
                         <option value="llm_only">LLM Only</option>
                         <option value="tts_only">TTS Only</option>
+                    </select>
+                </div>
+
+                <!-- TTS Engine -->
+                <div class="selector-group">
+                    <label for="tts_engine_select">TTS Engine</label>
+                    <select id="tts_engine_select">
+                        <option value="orpheus">Orpheus</option>
+                        <option value="parler">Parler</option>
                     </select>
                 </div>
 
@@ -498,6 +578,18 @@
                     </select>
                 </div>
 
+            </div>
+
+            <hr>
+
+            <!-- ── Conversation Mode Controls ─────────────────────── -->
+            <div class="section-label">Conversation Mode</div>
+            <div class="conversation-controls">
+                <button type="button" id="conversation-toggle-btn">🎙️ Start Conversation</button>
+                <div class="vad-indicator">
+                    <div class="vad-dot" id="vad-dot"></div>
+                    <span id="conversation-status">Inactive</span>
+                </div>
             </div>
 
             <hr>

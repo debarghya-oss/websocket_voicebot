@@ -2,8 +2,11 @@ import re
 import numpy as np
 import torch
 from torch import nn
+import torchaudio
 import logging
 from typing import List, Optional
+import base64
+from io import BytesIO
 
 from config import (
     ORPHEUS_MIN_ID, ORPHEUS_MAX_ID, ORPHEUS_TOKENS_PER_LAYER, 
@@ -144,7 +147,17 @@ def redistribute_codes(codes: List[int], model: nn.Module) -> Optional[np.ndarra
 
 
 def apply_fade(audio_chunk: np.ndarray, sample_rate: int, fade_ms: int = 5) -> np.ndarray:
-    """Applies a fade in/out to an audio chunk."""
+    """
+    Applies a fade in/out to an audio chunk for smooth transitions.
+    
+    Args:
+        audio_chunk: Float32 numpy array
+        sample_rate: Sample rate of the audio (used to calculate fade duration)
+        fade_ms: Fade duration in milliseconds (default 5ms for smooth transitions)
+    
+    Returns:
+        Audio chunk with fade applied
+    """
     if audio_chunk is None or audio_chunk.size == 0:
         return audio_chunk
     num_fade_samples = int(sample_rate * (fade_ms / 1000.0))
@@ -154,5 +167,108 @@ def apply_fade(audio_chunk: np.ndarray, sample_rate: int, fade_ms: int = 5) -> n
     fade_out = np.linspace(1., 0., num_fade_samples, dtype=audio_chunk.dtype)
     audio_chunk[:num_fade_samples] *= fade_in
     audio_chunk[-num_fade_samples:] *= fade_out
-    logger.debug(f"Applied {fade_ms}ms fade to audio chunk.")
+    logger.debug(f"Applied {fade_ms}ms fade to audio chunk at {sample_rate}Hz.")
     return audio_chunk
+
+
+# ================================================================
+# BASE64 AUDIO ENCODING/DECODING
+# ================================================================
+def encode_audio_to_base64(audio_bytes: bytes) -> str:
+    """Encodes raw audio bytes to base64 string."""
+    if not audio_bytes:
+        return ""
+    try:
+        return base64.b64encode(audio_bytes).decode('utf-8')
+    except Exception as e:
+        logger.error(f"Failed to encode audio to base64: {e}")
+        return ""
+
+
+def decode_audio_from_base64(audio_base64: str) -> bytes:
+    """Decodes base64 string to raw audio bytes."""
+    if not audio_base64:
+        return b''
+    try:
+        return base64.b64decode(audio_base64)
+    except Exception as e:
+        logger.error(f"Failed to decode audio from base64: {e}")
+        return b''
+
+
+def encode_float32_chunk_to_base64(float32_array: np.ndarray) -> str:
+    """Converts Float32 numpy array to bytes and encodes as base64."""
+    if float32_array is None or float32_array.size == 0:
+        return ""
+    try:
+        # Ensure it's float32
+        if float32_array.dtype != np.float32:
+            float32_array = float32_array.astype(np.float32)
+        audio_bytes = float32_array.tobytes()
+        return encode_audio_to_base64(audio_bytes)
+    except Exception as e:
+        logger.error(f"Failed to encode float32 chunk to base64: {e}")
+        return ""
+
+
+def decode_base64_to_float32(audio_base64: str) -> Optional[np.ndarray]:
+    """Decodes base64 string to Float32 numpy array."""
+    if not audio_base64:
+        return None
+    try:
+        audio_bytes = decode_audio_from_base64(audio_base64)
+        if not audio_bytes:
+            return None
+        # Convert bytes back to float32 array
+        float32_array = np.frombuffer(audio_bytes, dtype=np.float32)
+        return float32_array
+    except Exception as e:
+        logger.error(f"Failed to decode base64 to float32: {e}")
+        return None
+
+
+# ================================================================
+# AUDIO RESAMPLING
+# ================================================================
+def resample_audio(audio_chunk: np.ndarray, orig_sample_rate: int, target_sample_rate: int) -> np.ndarray:
+    """
+    Resample audio from original sample rate to target sample rate.
+    Uses linear interpolation for fast, efficient resampling.
+    
+    Args:
+        audio_chunk: Float32 numpy array of audio samples
+        orig_sample_rate: Original sample rate (e.g., 24000)
+        target_sample_rate: Target sample rate (e.g., 8000)
+    
+    Returns:
+        Resampled audio as float32 numpy array
+    """
+    if audio_chunk is None or audio_chunk.size == 0:
+        return audio_chunk
+    
+    if orig_sample_rate == target_sample_rate:
+        return audio_chunk
+    
+    try:
+        # High-quality anti-aliased resampling using torchaudio
+        audio_tensor = torch.from_numpy(audio_chunk).float()
+        
+        # Add channel dim if it's 1D
+        if audio_tensor.ndim == 1:
+            audio_tensor = audio_tensor.unsqueeze(0)
+            resampled_tensor = torchaudio.functional.resample(audio_tensor, orig_sample_rate, target_sample_rate)
+            resampled = resampled_tensor.squeeze(0).numpy()
+        else:
+            resampled_tensor = torchaudio.functional.resample(audio_tensor, orig_sample_rate, target_sample_rate)
+            resampled = resampled_tensor.numpy()
+            
+        logger.debug(
+            f"Resampled audio from {orig_sample_rate}Hz ({len(audio_chunk)} samples) "
+            f"to {target_sample_rate}Hz ({len(resampled)} samples) using torchaudio."
+        )
+        
+        return resampled
+    
+    except Exception as e:
+        logger.error(f"Resampling failed: {e}. Returning original audio.")
+        return audio_chunk

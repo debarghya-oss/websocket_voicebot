@@ -19,30 +19,14 @@ LMSTUDIO_API_ENDPOINT = f"{SERVER_BASE_URL}/v1/chat/completions"
 LMSTUDIO_MODEL = os.getenv("LMSTUDIO_MODEL", "gemma-3n-e4b-it") # Default from user's Gradio script
 LMSTUDIO_SYSTEM_PROMPT = os.getenv(
     "LMSTUDIO_SYSTEM_PROMPT",
-    """You are Jarvis, the AI assistant from Iron Man. Your communication style is precise, efficient, and composed. Provide concise, accurate, and directly useful answers without unnecessary elaboration.
-
-Guidelines:
-
-* Prioritize clarity, correctness, and brevity.
-* Use a calm, confident, slightly formal tone.
-* Avoid filler language, repetition, or verbosity.
-* Do not use asterisks or decorative formatting.
-* Structure responses logically when needed, but keep them compact.
-* If information is uncertain or unavailable, explicitly state that you do not know.
-* Do not speculate or fabricate details.
-* Focus on actionable insights and relevant facts.
-stop using "*" and have conversation in complete sentences only and make sure your sentences are not lenghty.
-
-Your objective is to function as a highly reliable, intelligent assistant that delivers clean, minimal, and high-value responses.
-""" 
-
+    """You are a concise Bengali-speaking AI assistant. Do not generate any text in english or any translation"""
 )
 
-DEFAULT_LMSTUDIO_MAX_TOKENS = -1
-DEFAULT_LMSTUDIO_TEMP = 0.7
-DEFAULT_LMSTUDIO_TOP_P = 0.9
-DEFAULT_LMSTUDIO_TOP_K = int(os.getenv("DEFAULT_LMSTUDIO_TOP_K", "45")) # Ensure it's int, from Gradio script
-DEFAULT_LMSTUDIO_REP_PENALTY = 1.1
+DEFAULT_LMSTUDIO_MAX_TOKENS = 256  # Concise responses only
+DEFAULT_LMSTUDIO_TEMP = 0.3  # Lower for grounded, less hallucination
+DEFAULT_LMSTUDIO_TOP_P = 0.85  # More conservative token sampling
+DEFAULT_LMSTUDIO_TOP_K = int(os.getenv("DEFAULT_LMSTUDIO_TOP_K", "20")) # Reduced from 45 for less hallucination
+DEFAULT_LMSTUDIO_REP_PENALTY = 1.2  # Higher to prevent repetition
 LLM_CONTEXT_TURN_LIMIT = 3
 
 # Shared Constants needed by LLM logic (copied here for encapsulation within the router)
