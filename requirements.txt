@@ -23,3 +23,12 @@ python-multipart
 whisper
 torchcodec
 snac
+
+pymilvus==2.4.4
+sentence-transformers
+langchain
+langchain-community
+pypdf
+docx2txt
+python-dotenv
+spacy

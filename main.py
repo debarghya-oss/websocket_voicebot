@@ -1,3 +1,7 @@
+# --- Load .env FIRST (before config/llm_router read env vars at import time) ---
+from dotenv import load_dotenv
+load_dotenv()
+
 # --- Standard Library Imports ---
 import asyncio
 import time
@@ -49,11 +53,28 @@ from parler_tts_engine import generate_speech_stream_parler_tts
 #from whisper_stt_engine import transcribe_audio as whisper_transcribe
 from indic_stt_engine import transcribe_audio as indic_transcribe
 from llm_router import router as llm_api_router, LLMChatRequest, generate_llm_text_stream
+from rag.routers.ingest import router as rag_ingest_router
+from rag.routers.modelfile import router as rag_modelfile_router
 from audio_utils import encode_audio_to_base64, decode_audio_from_base64
 from vad_engine import VADProcessor
+from sentence_chunker import StreamingSentenceBuffer
 
 # --- Global TTS Engine State ---
 current_tts_engine = DEFAULT_TTS_ENGINE
+
+
+async def aiter_sync(gen):
+    """
+    Iterate a blocking/sync generator (LLM stream, TTS stream) from async code
+    WITHOUT blocking the event loop — keeps VAD/barge-in responsive while the
+    LLM or TTS is producing.
+    """
+    sentinel = object()
+    while True:
+        item = await asyncio.to_thread(next, gen, sentinel)
+        if item is sentinel:
+            break
+        yield item
 
 
 # --- FastAPI Lifespan ---
@@ -96,6 +117,25 @@ async def lifespan(app_: object):
     os.makedirs("temp_stt_audio_files", exist_ok=True)
     logger.info("[Startup] ✓ temp_stt_audio_files directory ensured.")
 
+    # ── RAG: init Milvus collection (no-op if already exists) ──
+    rag_enabled = os.getenv("RAG_ENABLED", "false").lower() == "true"
+    if rag_enabled:
+        try:
+            from rag.vectorstore import init_collection
+            init_collection()
+            logger.info("[Startup] ✓ Milvus RAG collection ready.")
+        except Exception as e:
+            logger.warning("[Startup] RAG Milvus init failed (is Milvus running?): %s", e)
+        # Preload embedder so the FIRST RAG query in a call doesn't stall
+        try:
+            from rag.embedder import get_embedder
+            await asyncio.to_thread(get_embedder)
+            logger.info("[Startup] ✓ RAG embedding model preloaded.")
+        except Exception as e:
+            logger.warning("[Startup] RAG embedder preload failed: %s", e)
+    else:
+        logger.info("[Startup] RAG disabled (set RAG_ENABLED=true in .env to enable).")
+
     logger.info("--- [Startup] All models loaded. Server ready. ---")
     yield
 
@@ -103,7 +143,9 @@ async def lifespan(app_: object):
 # --- FastAPI App ---
 app = FastAPI(title="Jarvis – Orpheus TTS / STT / LLM", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static", html=True), name="static_assets")
-app.include_router(llm_api_router, prefix="/api/llm", tags=["LLM"])
+app.include_router(llm_api_router,     prefix="/api/llm",       tags=["LLM"])
+app.include_router(rag_ingest_router,  prefix="/api/rag",       tags=["RAG Ingest"])
+app.include_router(rag_modelfile_router, prefix="/api/rag",     tags=["RAG Modelfile"])
 
 
 # --- Pydantic Models ---
@@ -487,7 +529,48 @@ async def websocket_conversation_endpoint(websocket: WebSocket):
                 model=config.get("model", None),
             )
 
-            for chunk in text_generator:
+            # ── Interleaved LLM → sentence → TTS streaming ──
+            # TTS starts on the FIRST completed sentence instead of waiting
+            # for the whole LLM response (big latency win).
+            sentence_buf = StreamingSentenceBuffer()
+            tts_started_sent = False
+            tts_start_time = time.time()
+            total_tts_audio_bytes = 0
+
+            async def _speak(sentence: str):
+                nonlocal tts_started_sent, tts_start_time, total_tts_audio_bytes
+                if not sentence.strip():
+                    return
+                if not tts_started_sent:
+                    await websocket.send_json({
+                        "type": "tts_started",
+                        "sample_rate": TARGET_SAMPLE_RATE,
+                        "audio_format": "FLOAT32_PCM_BASE64",
+                    })
+                    tts_started_sent = True
+                    tts_start_time = time.time()
+                audio_generator = generate_speech_stream_bytes(
+                    text=sentence,
+                    voice=config.get("voice", "tara"),
+                    tts_temperature=config.get("tts_temperature", 0.9),
+                    tts_top_p=config.get("tts_top_p", 0.9),
+                    tts_repetition_penalty=config.get("tts_repetition_penalty", 1.1),
+                    buffer_groups_param=config.get("buffer_groups", 5),
+                    padding_ms_param=config.get("padding_ms", 0),
+                    min_decode_batch_groups_param=config.get("min_decode_batch_groups", 7),
+                )
+                async for audio_chunk in aiter_sync(audio_generator):
+                    if interrupt_flag.is_set():
+                        return
+                    if audio_chunk:
+                        total_tts_audio_bytes += len(audio_chunk)
+                        await websocket.send_json({
+                            "type": "tts_audio_chunk",
+                            "audio": encode_audio_to_base64(audio_chunk),
+                            "bytes_length": len(audio_chunk),
+                        })
+
+            async for chunk in aiter_sync(text_generator):
                 if interrupt_flag.is_set():
                     return
                 llm_text += chunk
@@ -495,49 +578,32 @@ async def websocket_conversation_endpoint(websocket: WebSocket):
                     await websocket.send_json({"type": "llm_chunk", "content": chunk})
                 except Exception:
                     return
+                for sentence in sentence_buf.add(chunk):
+                    await _speak(sentence)
+                    if interrupt_flag.is_set():
+                        return
 
             await websocket.send_json({"type": "llm_done"})
             chat_history.append({"role": "assistant", "content": llm_text})
             logger.info(f"[{session_id}] LLM done: '{llm_text[:100]}'")
 
-            # --- TTS ---
+            # --- TTS (flush trailing fragment) ---
             if interrupt_flag.is_set() or not llm_text.strip():
                 await websocket.send_json({"type": "listening"})
                 return
 
-            await websocket.send_json({
-                "type": "tts_started",
-                "sample_rate": TARGET_SAMPLE_RATE,
-                "audio_format": "FLOAT32_PCM_BASE64",
-            })
+            remainder = sentence_buf.flush()
+            if remainder:
+                await _speak(remainder)
+            if interrupt_flag.is_set():
+                return
 
-            tts_start_time = time.time()
-            total_tts_audio_bytes = 0
-
-            audio_generator = generate_speech_stream_bytes(
-                text=llm_text,
-                voice=config.get("voice", "tara"),
-                tts_temperature=config.get("tts_temperature", 0.9),
-                tts_top_p=config.get("tts_top_p", 0.9),
-                tts_repetition_penalty=config.get("tts_repetition_penalty", 1.1),
-                buffer_groups_param=config.get("buffer_groups", 5),
-                padding_ms_param=config.get("padding_ms", 0),
-                min_decode_batch_groups_param=config.get("min_decode_batch_groups", 7),
-            )
-
-            for audio_chunk in audio_generator:
-                if interrupt_flag.is_set():
-                    return
-                if audio_chunk:
-                    total_tts_audio_bytes += len(audio_chunk)
-                    try:
-                        await websocket.send_json({
-                            "type": "tts_audio_chunk",
-                            "audio": encode_audio_to_base64(audio_chunk),
-                            "bytes_length": len(audio_chunk),
-                        })
-                    except Exception:
-                        return
+            if not tts_started_sent:
+                await websocket.send_json({
+                    "type": "tts_started",
+                    "sample_rate": TARGET_SAMPLE_RATE,
+                    "audio_format": "FLOAT32_PCM_BASE64",
+                })
 
             await websocket.send_json({"type": "tts_done"})
             logger.info(f"[{session_id}] TTS done")
@@ -1033,29 +1099,89 @@ async def websocket_exotel_voicebot(websocket: WebSocket):
             text_generator = generate_llm_text_stream(
                 prompt=transcript,
                 history=chat_history[:-1],
-                llm_temperature=config.get(
-                    "temperature",
-                    0.7,
-                ),
+                llm_temperature=config.get("temperature", 0.7),
                 llm_top_p=config.get("top_p", 0.9),
-                llm_max_tokens=config.get(
-                    "max_tokens",
-                    -1,
-                ),
-                llm_repetition_penalty=config.get(
-                    "repetition_penalty",
-                    1.1,
-                ),
+                llm_max_tokens=config.get("max_tokens", -1),
+                llm_repetition_penalty=config.get("repetition_penalty", 1.1),
                 llm_top_k=config.get("top_k", 45),
                 model=config.get("model", None),
             )
 
-            for chunk in text_generator:
+            # ── Interleaved LLM → sentence → TTS streaming ──
+            # Each completed sentence (Bengali danda-aware) is synthesized and
+            # sent to Exotel while the LLM keeps generating. Sync generators
+            # are iterated via aiter_sync so VAD/barge-in stays responsive.
+            sentence_buf = StreamingSentenceBuffer()
+            tts_start_time = time.time()
+            total_tts_audio_bytes = 0
+            first_sentence = True
+
+            async def _speak_exotel(sentence: str) -> bool:
+                """Synthesize one sentence and stream it to Exotel. Returns False on interrupt."""
+                nonlocal total_tts_audio_bytes, tts_start_time, first_sentence
+                if not sentence.strip():
+                    return True
+                if first_sentence:
+                    tts_start_time = time.time()
+                    first_sentence = False
+
+                audio_generator = generate_speech_stream_bytes(
+                    text=sentence,
+                    voice=config.get("voice", "tara"),
+                    tts_temperature=config.get("tts_temperature", 0.9),
+                    tts_top_p=config.get("tts_top_p", 0.9),
+                    tts_repetition_penalty=config.get("tts_repetition_penalty", 1.1),
+                    buffer_groups_param=config.get("buffer_groups", 5),
+                    padding_ms_param=config.get("padding_ms", 0),
+                    min_decode_batch_groups_param=config.get("min_decode_batch_groups", 7),
+                )
+
+                async for audio_chunk in aiter_sync(audio_generator):
+
+                    if interrupt_flag.is_set():
+                        clear_event = {
+                            "event": "clear",
+                            "stream_sid": stream_sid,
+                        }
+                        try:
+                            await websocket.send_text(json.dumps(clear_event))
+                        except Exception:
+                            pass
+                        return False
+
+                    if not audio_chunk:
+                        continue
+
+                    total_tts_audio_bytes += len(audio_chunk) if isinstance(audio_chunk, bytes) else audio_chunk.nbytes
+
+                    # Orpheus/SNAC output is FLOAT32 PCM at TARGET_SAMPLE_RATE
+                    if isinstance(audio_chunk, np.ndarray):
+                        audio_float = audio_chunk.astype(np.float32)
+                    else:
+                        audio_float = np.frombuffer(audio_chunk, dtype=np.float32)
+
+                    audio_float = np.clip(audio_float, -1.0, 1.0)
+
+                    # Resample TARGET_SAMPLE_RATE -> 8kHz for Exotel (no-op if already 8k)
+                    if TARGET_SAMPLE_RATE != 8000:
+                        audio_float = resampy.resample(audio_float, TARGET_SAMPLE_RATE, 8000)
+                        audio_float = np.clip(audio_float, -1.0, 1.0)
+
+                    pcm16 = (audio_float * 32767.0).astype(np.int16)
+                    await send_exotel_media(pcm16.tobytes())
+
+                return True
+
+            async for chunk in aiter_sync(text_generator):
 
                 if interrupt_flag.is_set():
                     return
 
                 llm_text += chunk
+
+                for sentence in sentence_buf.add(chunk):
+                    if not await _speak_exotel(sentence):
+                        return
 
             llm_text = llm_text.strip()
 
@@ -1073,127 +1199,11 @@ async def websocket_exotel_voicebot(websocket: WebSocket):
                 }
             )
 
-            # =====================================================
-            # TTS
-            # =====================================================
-
-            if interrupt_flag.is_set():
-                return
-
-            tts_start_time = time.time()
-            total_tts_audio_bytes = 0
-
-            audio_generator = generate_speech_stream_bytes(
-                text=llm_text,
-                voice=config.get("voice", "tara"),
-                tts_temperature=config.get(
-                    "tts_temperature",
-                    0.9,
-                ),
-                tts_top_p=config.get(
-                    "tts_top_p",
-                    0.9,
-                ),
-                tts_repetition_penalty=config.get(
-                    "tts_repetition_penalty",
-                    1.1,
-                ),
-                buffer_groups_param=config.get(
-                    "buffer_groups",
-                    5,
-                ),
-                padding_ms_param=config.get(
-                    "padding_ms",
-                    0,
-                ),
-                min_decode_batch_groups_param=config.get(
-                    "min_decode_batch_groups",
-                    7,
-                ),
-            )
-
-            for audio_chunk in audio_generator:
-
-                if interrupt_flag.is_set():
-
-                    clear_event = {
-                        "event": "clear",
-                        "stream_sid": stream_sid,
-                    }
-
-                    try:
-                        await websocket.send_text(
-                            json.dumps(clear_event)
-                        )
-                    except Exception:
-                        pass
-
+            # Flush trailing sentence fragment to TTS
+            remainder = sentence_buf.flush()
+            if remainder:
+                if not await _speak_exotel(remainder):
                     return
-
-                if not audio_chunk:
-                    continue
-
-                total_tts_audio_bytes += len(audio_chunk) if isinstance(audio_chunk, bytes) else audio_chunk.nbytes
-
-                # =================================================
-                # NORMALIZE INPUT AUDIO
-                # =================================================
-
-                # Orpheus returns FLOAT32 PCM audio @ 24kHz
-                # We must convert correctly before resampling.
-
-                if isinstance(audio_chunk, np.ndarray):
-
-                    audio_float = audio_chunk.astype(np.float32)
-
-                else:
-                    # Raw bytes from generator -> FLOAT32 PCM
-                    audio_float = np.frombuffer(
-                        audio_chunk,
-                        dtype=np.float32,
-                    )
-
-                # =================================================
-                # CLIP SAFELY
-                # =================================================
-
-                audio_float = np.clip(
-                    audio_float,
-                    -1.0,
-                    1.0,
-                )
-
-                # =================================================
-                # RESAMPLE 24kHz -> 8kHz FOR EXOTEL
-                # =================================================
-
-                resampled = resampy.resample(
-                    audio_float,
-                    TARGET_SAMPLE_RATE,   # 24000
-                    8000,
-                )
-
-                # =================================================
-                # FLOAT32 -> PCM16 LITTLE ENDIAN
-                # =================================================
-
-                resampled = np.clip(
-                    resampled,
-                    -1.0,
-                    1.0,
-                )
-
-                pcm16 = (
-                    resampled * 32767.0
-                ).astype(np.int16)
-
-                final_bytes = pcm16.tobytes()
-
-                # =================================================
-                # SEND TO EXOTEL
-                # =================================================
-
-                await send_exotel_media(final_bytes)
 
             logger.info(
                 f"[{session_id}] TTS completed"

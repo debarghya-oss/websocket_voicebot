@@ -78,3 +78,38 @@ class SentenceChunkerForTTS:
             chunk_count += 1
             logger.debug(f"TTS final chunk {chunk_count}: {len(chunk_to_yield)} chars - '{chunk_to_yield[:80]}...'") 
             yield chunk_to_yield
+
+class StreamingSentenceBuffer:
+    """
+    Incremental sentence buffer for LLM->TTS streaming.
+    Feed LLM token chunks via add(); it yields complete sentences as soon
+    as they terminate. Handles Bengali danda (।) plus . ? ! and newlines.
+    Call flush() after the LLM stream ends to get the trailing fragment.
+    """
+    TERMINATORS = ("।", ".", "?", "!", "\n")
+    MIN_SENTENCE_CHARS = 4   # skip TTS on tiny fragments like "ok."
+
+    def __init__(self):
+        self.buffer = ""
+
+    def add(self, text_chunk: str):
+        self.buffer += text_chunk
+        sentences = []
+        while True:
+            cut = -1
+            for t in self.TERMINATORS:
+                idx = self.buffer.find(t)
+                if idx != -1 and (cut == -1 or idx < cut):
+                    cut = idx
+            if cut == -1:
+                break
+            sentence = self.buffer[: cut + 1].strip()
+            self.buffer = self.buffer[cut + 1:]
+            if sentence:
+                sentences.append(sentence)
+        return sentences
+
+    def flush(self) -> str:
+        remainder = self.buffer.strip()
+        self.buffer = ""
+        return remainder
