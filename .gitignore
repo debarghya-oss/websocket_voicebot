@@ -1,0 +1,64 @@
+# Environment files
+
+.env
+.env.local
+
+# Virtual environments
+
+venv/
+.venv/
+env/
+
+# Python cache
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Temporary files
+
+temp_stt_audio_files/
+*.log
+
+# IDE
+
+.vscode/
+.idea/
+
+# OS files
+
+.DS_Store
+Thumbs.db
+
+# Model files
+
+*.gguf
+models/
+
+# Hugging Face cache
+
+.cache/
+huggingface_cache/
+
+# Build artifacts
+
+build/
+dist/
+*.egg-info/
+
+# Jupyter
+
+.ipynb_checkpoints/
+
+# Docker volumes (if local)
+
+milvus_data/
+minio_data/
+etcd_data/
+
+# Test artifacts
+
+.pytest_cache/
+coverage.xml
+htmlcov/
